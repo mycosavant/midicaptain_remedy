@@ -182,15 +182,21 @@ The author’s global-rackspace-script implements equalizer preset selectors for
 
 [1] Circuit Python code to access the MIDI Captain’s hardware resources:
 https://github.com/nicola-lunghi/hiper-midicaptain
+
 [2] Circuit Python code for bidirectional communication with Kemper devices:
 https://github.com/gstrotmann/MidiCaptain4Kemper
+
 [3] Same as [2] but hard to understand:
 https://github.com/Tunetown/PySwitch
+
 [4] The starting point for learning Cicuit Python:
 https://circuitpython.org/
+
 [5] Download link for the Mu Editor:
 https://codewith.mu/en/download
+
 [6] Download link for the author’s MIDI Captain firmware package:
 https://www.helmutkelleraudio.de/_downloads/e5da815b5483deef1ef02b89707f769e
+
 [7] Download link for the author’s Gig Performer script:
 https://www.helmutkelleraudio.de/_downloads/36244a6aa3ba8ec7baea98549d2fb650
