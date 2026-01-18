@@ -1,4 +1,5 @@
-FROM: https://www.helmutkelleraudio.de/
+Sections Relevant to Firmware, FROM: https://www.helmutkelleraudio.de/
+
 ## 3. Programming the firmware of the MIDI Captain
 
 This chapter can be skipped by those who don’t want to modify the author’s firmware.
@@ -57,7 +58,8 @@ This mapping is compatible with the iRig Blue Board for the two expression pedal
 The control change commands are sent by MIDI captain whenever a value of a physical control is changed. The switches send a value of 127 when pressed and a value of zero when released.
 
 **Table 1**: The mapping of control-change numbers to the MIDI Captain controls.
-![[Pasted image 20260118154614.png]]
+
+![Table-1](./res/table-1.png)
 
 The authors firmware reacts to received control-change commands with the same numbers, too. For all controls except the “up” and “down” foot switches, the received value is shown on an associated small rectangle on the display of the device. The LED rings around all ten foot switches are set fully bright for values > 63, and are dimmed for lower values.
 
@@ -71,7 +73,7 @@ The display layout of the author’s firmware is shown in Fig. 2. It is organize
 4. CC#20, CC#21, CC#22 and CC#23.
 5. Battery voltage, CC#14 and CC#11
 
-![[Pasted image 20260118154743.png]]
+![Fig. 2](./res/fig-2.png)
 
 The received values for each CC# are shown as a brightly lit bars over a darker background. Remember that values of the CC#s mapped to the ten foot switches are shown by the associated LED rings, too. The values of CC#19 and CC#24 are only shown by the associated LEDs because there are no associated rectangles on the display.
 
@@ -95,7 +97,7 @@ CC#24: 7, Down
 The number after “CC#” is the control-change number of the control. The number after “:” is the color index of the associated LED or rectangle (see Table 2 for the color names of the color indices). The text after the “, ” is the name displayed in the associated rectangles. Do note that there
 is a blank after the comma. The name should describe the function of the control. The names for CC#19 and CC#24 are ignored because there are no associated rectangles on the display.
 
-![[Pasted image 20260118154459.png]]
+![Table-2](./res/table-2.png)
 
 The user can edit this file to define his own default colors and names. During operation the colors and names 
 can be set by MIDI system exclusive commands too.
@@ -115,7 +117,8 @@ longer than 22 characters makes no sense.
 
 In tuner mode the big rectangle in the center of the display shows the note name and the pitch deviation as a pointer (see **Fig. 3**).
 
-![[Pasted image 20260118154321.png]]
+![Fig-3](./res/fig-3.png)
+
 The MIDI note number is received via note on and note off commands. The MIDI note number is translated by the author’s firmware to the proper note name. Note off means that no pitch deviation can be detected any more. This is shown as the special note name “-----”.
 
 The pitch deviation is received via pitch wheel commands. A value of 8192 corresponds with 200 cents. The pitch deviation is limited by the firmware to + / - 29 cents and then displayed as a pitch deviation pointer.
@@ -141,7 +144,9 @@ rackspace. The scripts for Gig Performer use a very user friendly language and a
 **Fig. 4** shows a screen shot of Gig Performer in “Set List View” as used in the author’s setup during
 live performances.
 
-![[Pasted image 20260118153956.png]]The name of the current song is shown in big letters in the second line of the screen. The previous and next song can be selected by clicking left or right from the current song name. You can select songs in the set list at the left side of the screen too. 
+![GigPerformer Set List View UI](./res/gp-setview.png)
+
+The name of the current song is shown in big letters in the second line of the screen. The previous and next song can be selected by clicking left or right from the current song name. You can select songs in the set list at the left side of the screen too. 
 
 With the help of MIDI Captain’s up and down foot switches you can select songs in the current set list too. A short press selects the previous or next song, a long press selects the first or last song in the set list. If both switches are pressed the song in the middle of the set list is selected. The author’s script sends the current song name to the MIDI Captain too.
 
