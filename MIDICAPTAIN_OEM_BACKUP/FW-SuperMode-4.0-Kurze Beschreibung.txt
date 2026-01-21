@@ -1,0 +1,135 @@
+Super Mode Funktionskonfiguration und Schlüsselworterklärung für FW-SuperMD4.0 Version
+(AI-Übersetzung)
+
+Halten Sie die Taste 1 des Geräts gedrückt oder schalten Sie das Gerät mit der Taste, die der Taste 0 entspricht, ein, und schließen Sie das USB-Kabel an den Computer an, um in den USB-Einstellungsmodus zu gelangen. Auf dem Computer wird ein entsprechendes MIDICAPTAIN-Laufwerk simuliert. Nach dem Eintritt können Sie die entsprechende Konfigurationsdatei in supersetup finden.
+
+(1) Unterstützt vier Auslösezeitpunkte für Tasten, nämlich kurzes Drücken, kurzes Loslassen, langes Drücken und langes Loslassen. Die entsprechenden Schlüsselwörter lauten: short_dwX, short_upX, longX, long_upX, wobei X eine Ziffer von 1 bis 9 ist, die dem X-ten Druck von keytimes entspricht.
+
+    Zum Beispiel: short_dw1 = [1][PC][5][-] bedeutet, dass zum Zeitpunkt des ersten kurzen Drückens ein PC-Befehl gesendet wird, PC-Wert ist 5, MIDI-Kanal ist 1.
+
+    Tipp: Wenn kurzes Drücken und langes Drücken vollständig unabhängige Ereignisse sein sollen, können wir nur kurzes Loslassen und langes Drücken definieren, also short_upX und longX. Auf diese Weise gibt es vor der Aktivierung des langen Drückens keine kurzen Druckaktionen.
+
+(2) Jeder Auslösezeitpunkt kann eine gemischte Steueranweisung definieren, einschließlich MIDI-PC-Befehl, CC-Befehl, NT (Note) -Befehl und Maus-Tastatur-HID-Befehl, der ein einzelner Befehl oder eine Kombination mehrerer Befehle sein kann, ohne Mengenbeschränkung.
+
+    Das Format jeder Anweisung besteht aus 4 eckigen Klammern [][][][], unten sind Beispiele für 4 verschiedene Arten von Einzelbefehlen:
+
+    [1][PC][8][-] bedeutet ein PC-Befehl, der PC8 sendet, MIDI-Kanal ist 1
+    [2][CC][10][127] bedeutet ein CC-Befehl, der CC10 mit einem Wert von 127 sendet, MIDI-Kanal ist 2
+    [1][NT][60][127] bedeutet ein Notenbefehl, der die Note 60 mit einer Geschwindigkeit von 127 sendet, MIDI-Kanal ist 1
+    [send][HID][-][A] bedeutet ein HID-Tastatur- und Maussimulationsbefehl, der eine schnelle Druck- und Freigabeaktion sendet, der Tastenwert ist A
+
+    Sie können jede Gruppe von 4 [] zusammenfassen und mehrere Sets kontinuierlicher Gruppen nach unten anordnen für mehrere Befehlssammlungen. Zum Beispiel, short_dw1 = [1][PC][8][-] [2][CC][10][127] [3][CC][20][127] [send][HID][-][A] ... Achten Sie auf das Format, Leerzeichen sind erlaubt, aber kein Zeilenumbruch dazwischen.
+
+(3) Das Schlüsselwort keytimes kann die Mehrfachdruckschleife der Taste definieren, und für jeden Druck können unterschiedliche Steuerbefehle konfiguriert werden.
+
+    keytimes = [1] bedeutet, dass diese Taste nur für die Einzeldruckfunktion definiert ist
+    keytimes = [5] bedeutet, dass diese Taste für die 5-malige Schleifenfunktion definiert ist, und Sie können 5 Sätze unterschiedlicher Befehlsparameter konfigurieren, maximal 9 Mal.
+
+(4) Alle Konfigurationsinhalte befinden sich im Verzeichnis supersetup, in der entsprechenden pageX.txt-Datei. Jede Seite ist eine Steuerfunktionssammlung, und Sie können zwischen den Seiten durch langes Drücken der rechtesten Taste wechseln. Es können maximal 99 Seiten vorhanden sein.
+
+    X in pageX.txt muss von 0 beginnen und kann bis zu 99 gehen, mit kontinuierlichen Zahlen dazwischen.
+
+(5) In jeder pageX.txt-Datei sind 3 Hauptteile definiert, zuerst [globalsetup]. Hier werden einige allgemeine Einstellungsparameter für das Gerät und jede Seite festgelegt. Beachten Sie, dass dieser Teil nur in page0.txt platziert werden muss, um nach dem Neustart des Geräts wirksam zu werden.
+
+    ledbright = [30] definiert die Helligkeit des Tastenlichtrings 1-100, empfohlen im Bereich von 20 bis 50
+
+    screenbright = [80] Bildschirmhelligkeit, 1-100, empfohlen im Bereich von 30 bis 100
+
+    dark_fonts = [off] Dunkle Schriftartenschalter, empfohlen als off auf dunklen Hintergrundbildern und als on auf hellen Hintergrundbildern
+
+    wallpaper = [wp1] Einstellung des Hintergrundbilds, empfohlen fest auf wp1 zu setzen, Sie können ein 240x240 24-Bit-BMP-Bild im Verzeichnis "wallpaper" auswählen und es in wp1 umbenennen, um das Hintergrundbild zu ersetzen
+
+    long_press_timing = [1] Zeit für die Langzeitdruckbestimmung, kann 1 / 1.5 / 2 / 2.5 sein, die Einheit ist Sekunde
+
+    WIRELESS_2.4G = [on] Schalter für das interne 2,4-GHz-Modul, on/off, gilt nur für die blauen und goldenen Versionen ab Schalter 10, die folgenden Optionen gelten ebenfalls
+
+    WIRELESS_ID = [8] ID-Nummer des drahtlosen Moduls, muss mit der des gepaarten MIDI MATE übereinstimmen, die Standardeinstellung ist 8, wenn mehrere Personen gleichzeitig drahtlose Steuerung verwenden, setzen Sie bitte verschiedene IDs.
+
+    WIRELESS_dB = [6] Leistungseinstellung des drahtlosen Moduls 0:12 dBm 1:10 dBm 2:9 dBm 3:8 dBm 4:6 dBm 5:3 dBm 6:0 dBm 7:-2 dBm 8:-5 dBm 9:-10 dBm 10:-15 dBm 11:-20 dBm 12:-25 dBm 13:-30 dBm 14:-25 dBm
+
+(6) Dann folgt [PAGE]. Hier werden die Parameter für jede Seite definiert:
+
+    page_name = [HXLP] Definiert den Namen der Seite, empfohlen werden 4 Großbuchstaben.
+
+    exp1_CH = [1] MIDI-Kanal des Expression-Pedals 1
+    exp1_CC = [1] MIDI-CC-Nummer des Expression-Pedals 1
+
+    exp2_CH = [1] MIDI-Kanal des Expression-Pedals 2
+    exp2_CC = [2] MIDI-CC-Nummer des Expression-Pedals 2
+
+    encoder_CC = [90] MIDI-CC-Nummer des Encoders
+    encoder_NAME = [MYCC] Funktion des Encoders
+
+    midithrough = [on] MIDI-Durchgang, ein/aus
+
+    display_number_ABC = [abc3] Auswahl der PC-Anzeige, 123 / abc3 / abc4 / abc5 / abc8 entsprechen reinen Zahlen oder Buchstaben-Gruppierungen mit Abstand 3,4,5,8.
+
+    group_number = [3] Hier wird die Gruppierung festgelegt. Wenn die obige Option auf die Ziffernweise 123 eingestellt ist, wird hier eine ergänzende Konfiguration für den Gruppenabstand vorgenommen.
+
+    display_pc_offset = [1] Füllen Sie 0 oder 1 ein, um anzuzeigen, ob der PC-Wert von 0 oder 1 beginnt. Dies dient der Ausrichtung der Anzeige auf unterschiedliche Hostgeräte.
+
+    display_bank_offset = [1] Füllen Sie 0 oder 1 ein, um anzuzeigen, ob bei Gruppierungen die Startgruppe bei 0 oder 1 beginnt.
+
+(7) Die spezifische Konfiguration der Tasten ist jeweils [key0] [key1] [key2] [key3] [key4] [key5] ... je nach Anzahl der Pins unterschiedlich.
+
+    Im Folgenden wird [key0] als Beispiel genommen:
+
+    keytimes = [3] Konfiguriert die Taste als eine 3-fache Zyklustaste.
+
+    ledmode = [normal] Konfiguriert den LED-Modus der Taste als normal. Dies bedeutet, dass beim Drücken die entsprechende LED-Farbe ledcolorX je nach Anzahl der Drücke angezeigt wird.
+
+    ledmode kann normal / select / tap sein. select bedeutet, dass bei Tasten, die als select konfiguriert sind, nur eine Taste gleichzeitig beleuchtet ist, um die Auswahl anzuzeigen. tap ist speziell für Taps konfiguriert, um einen Blink-Effekt zu erzeugen. Beachten Sie, dass die select-Konfiguration eine implizite Bedeutung hat: Eine Taste, die als mehrfacher Zyklus konfiguriert ist und bei der ledmode select ist, wird bei Rückkehr zu einer anderen Taste im Zyklus wieder in den Ausgangszustand zurückkehren, d. h. zur ursprünglichen Funktion beim ersten Drücken. Andernfalls wird der Zyklus bei ledmode normal fortgesetzt.
+
+    ledcolor1 = [0x666666][0x666666][0xff0000] Definiert die Farbe für den ersten Tastendruck (Grau, Grau, Rot). Drei eckige Klammern stehen für drei Farbsegmente des Rings. Das Präfix 0x steht für eine hexadezimale Zahl, wobei die RGB-Komponenten die Farbwerte für Rot, Grün und Blau darstellen. Zum Beispiel steht 0xff0000 für die Farbe Rot (Rot: ff(256), Grün: 00, Blau: 00). Sie können die entsprechenden Farbwerte im Internet suchen.
+
+    short_dw1 = [1][CC][69][0] Definiert den Befehl für den ersten kurzen Tastendruck: Kanal 1, CC69, Wert 0.
+
+    ledcolor2 = [0xff0000][0x666666][0x666666] Definiert die Farbe für den zweiten Tastendruck (Rot, Grau, Grau).
+    short_dw2 = [1][CC][69][1] Definiert den Befehl für den zweiten kurzen Tastendruck: Kanal 1, CC69, Wert 1.
+
+    ledcolor3 = [0x666666][0xff0000][0x666666] Definiert die Farbe für den dritten Tastendruck (Grau, Rot, Grau).
+    short_dw3 = [1][CC][69][2] Definiert den Befehl für den dritten kurzen Tastendruck: Kanal 1, CC69, Wert 2.
+
+(8) Andere vordefinierte Schlüsselwörter und deren Verwendungserklärung
+
+    Beachten Sie die Groß- und Kleinschreibung genau:
+
+    [1][PC][inc1][-] bedeutet, dass der aktuelle PC-Wert um 1 erhöht wird. Es können inc1 / inc2 / inc3 / inc4 / inc5 verwendet werden, um +1, +2, +3, +4, +5 zu entsprechen.
+    [1][PC][dec1][-] bedeutet, dass der aktuelle PC-Wert um 1 verringert wird. Es können dec1 / dec2 / dec3 / dec4 / dec5 verwendet werden, um -1, -2, -3, -4, -5 zu entsprechen.
+    [2][PC][random][-] random bedeutet, dass ein zufälliger PC-Wert gesendet wird, MIDI-Kanal 2.
+    [1][PC][auto][bank_inc] bedeutet, dass der PC automatisch gruppiert wird und die Gruppennummer um 1 erhöht wird.
+    [1][PC][auto][bank_dec] bedeutet, dass der PC automatisch gruppiert wird und die Gruppennummer um 1 verringert wird.
+    [1][PC][auto][0] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des ersten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][1] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des zweiten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][2] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des dritten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][3] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des vierten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][4] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des fünften Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][5] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des sechsten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][6] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des siebten Instruments in dieser Gruppe gesendet wird.
+    [1][PC][auto][7] bedeutet, dass der PC automatisch gruppiert wird und die PC-Nummer des achten Instruments in dieser Gruppe gesendet wird.
+
+    [send][HID][-][A] Tastaturbefehl, Taste A, schnell drücken und loslassen.
+    [press][HID][-][A] Tastaturbefehl, Taste A, simuliertes Drücken, ohne loszulassen.
+    [release][HID][-][A] Tastaturbefehl, Taste A, simuliertes Loslassen.
+    [release][HID][-][all] Tastaturbefehl, alle Tasten loslassen.
+    [delay][HID][-][50] Reiner Verzögerungsbefehl, 50 Einheiten in Millisekunden (ms).
+
+    [send][HID][Ctrl][A] Tastaturbefehl, zusammengesetzte Taste, das dritte Paar Klammern kann optional sein: Ctrl / Shift / Alt / Option / Windows.
+
+    Das vierte Paar Klammern der Maus-Tastatur-Simulationsbefehle kann unterstützte Tasten umfassen:
+
+    A-Z, 0-9, F1-F12, Mouse_L (Mauslinksklick), Mouse_R (Mausrechtsklick).
+
+    Space, Esc, Caps, Rechts, Links, Hoch, Runter, Ende, Löschen, Seite hoch, Seite runter, Eingabe, Pause, Tabelle, Rücktaste, Home, Einfügen, Druck (Bildschirm drucken).
+
+(9) Funktionale Tipps
+
+    NT-Notenbefehle können dazu führen, dass nach dem Senden einer Notenfrequenz der Ton weiterhin erklingt. Fügen Sie einen Befehl hinzu, um die Lautstärke auf 0 zu setzen, um den Klang zu beenden. In vielen Fällen können Sie auch den allgemeinen Befehl [1][CC][123][0] verwenden, um den Klang zu stoppen, abhängig davon, ob das Hostgerät dies unterstützt.
+
+    [press][HID][-][A] Verwenden Sie press, um das Drücken einer Taste zu simulieren. Stellen Sie sicher, dass Sie den entsprechenden Befehl zum Loslassen konfigurieren, da der Computer sonst weiterhin auf das Drücken der Taste reagiert, was zu Problemen wie Computerabstürzen führen kann.
+
+    [delay][HID][-][50] Nach dem Senden des reinen Verzögerungsbefehls wird das Gerät während der Verzögerungszeit keine weiteren Aktionen ausführen. Konfigurieren Sie keine zu lange Verzögerung.
+
+    Das Gerät speichert den aktuellen PC-Wert und die Seite alle 30 Sekunden. Während des Speichervorgangs gibt es eine kurze Verzögerung.
+
+    Die Navigation zur aktuellen Seite kann über MIDI IN von externen Geräten gesteuert werden. Der entsprechende Befehl ist CC 20 XX, wobei XX die Seitennummer des Ziel-Page ist. Beachten Sie, dass XX innerhalb des aktuellen Seitenbereichs des Geräts liegen sollte.

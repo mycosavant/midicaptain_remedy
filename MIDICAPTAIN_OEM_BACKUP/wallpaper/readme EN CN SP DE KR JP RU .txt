@@ -1,0 +1,15 @@
+Starting from Supermode 4.0 and later versions, we no longer store numerous wallpapers in the wallpaper directory. This approach helps save time in program updates and reduces the risk of errors. If you want to change the wallpaper, you can directly copy wallpapers from the original program package or your custom-made wallpapers to the directory, rename them as wp1, and replace the default wallpaper. We will also provide more curated wallpapers on our official website for users to download.
+
+在Supermode 4.0及以后的版本中，我们不再在wallpaper目录下存放大量的墙纸。这样做的好处是可以节省程序更新的时间并降低出错的风险。如果您想更换墙纸，可以直接将原程序包中的墙纸或者您自己制作的墙纸复制到该目录下，并重命名为wp1以取代默认墙纸。我们也将提供更多精选墙纸在官方网站供大家下载。
+
+在Super Mode 4.0及之后的版本中，我們不再在wallpaper目錄下存放大量的牆紙。這樣做的好處是可以節省程式更新的時間並降低出錯的風險。如果您想更換牆紙，可以直接將原程式包中的牆紙或者您自己製作的牆紙複製到該目錄下，並重新命名為wp1以取代默認牆紙。我們也將提供更多精選牆紙在官方網站供大家下載。
+
+En las versiones Super Mode 4.0 y posteriores, ya no almacenamos una gran cantidad de fondos de pantalla en el directorio "wallpaper". La ventaja de hacerlo de esta manera es que podemos ahorrar tiempo en las actualizaciones del programa y reducir el riesgo de errores. Si desea cambiar el fondo de pantalla, simplemente copie los fondos de pantalla del paquete original del programa o los que haya creado usted mismo en ese directorio, y renómbrelos como "wp1" para reemplazar el fondo de pantalla predeterminado. También proporcionaremos más fondos de pantalla seleccionados para su descarga en el sitio web oficial.
+
+In den Versionen Super Mode 4.0 und später speichern wir keine großen Mengen von Hintergrundbildern mehr im Verzeichnis "wallpaper". Der Vorteil dieser Vorgehensweise besteht darin, dass wir Zeit bei Programmaktualisierungen sparen und das Risiko von Fehlern verringern können. Wenn Sie das Hintergrundbild ändern möchten, kopieren Sie einfach die Hintergrundbilder aus dem Originalprogrammpaket oder erstellen Sie Ihre eigenen und speichern Sie sie in diesem Verzeichnis. Benennen Sie sie dann als "wp1" um, um das Standardhintergrundbild zu ersetzen. Wir werden auch mehr ausgewählte Hintergrundbilder auf der offiziellen Website zum Download anbieten.
+
+Super Mode 4.0以降のバージョンでは、大量の壁紙をもはや "wallpaper" ディレクトリに保存しません。これにより、プログラムの更新時間を節約し、エラーのリスクを低減することができます。壁紙を変更したい場合は、元のプログラムパッケージから壁紙をコピーするか、独自の壁紙を作成し、そのディレクトリに保存してください。そして、デフォルトの壁紙を置き換えるためにそれらを "wp1" として名前を変更します。また、公式ウェブサイトでより多くの厳選された壁紙をダウンロードできるようにします。
+
+В версии Super Mode 4.0 и выше мы больше не храним большое количество обоев в каталоге "wallpaper". Это позволяет сэкономить время обновления программы и снизить риск ошибок. Если вы хотите изменить обои, скопируйте их из исходного пакета программы или создайте собственные обои и сохраните их в этом каталоге. Затем переименуйте их в "wp1", чтобы заменить стандартные обои. Мы также будем предоставлять больше отобранных обоев для загрузки на официальном веб-сайте.
+
+Super Mode 4.0 및 그 이상의 버전에서는 더 이상 'wallpaper' 디렉토리에 많은 수의 배경 화면을 저장하지 않습니다. 이렇게 함으로써 프로그램 업데이트 시간을 절약하고 오류 가능성을 줄일 수 있습니다. 배경 화면을 변경하려면 프로그램 패키지의 기본 배경 화면이나 사용자가 제작한 배경 화면을 직접 해당 디렉토리로 복사하고 'wp1'로 이름을 변경하여 기본 배경 화면을 대체하면 됩니다. 또한 공식 웹 사이트에서 다운로드할 수 있는 더 많은 선별된 배경 화면을 제공할 예정입니다.

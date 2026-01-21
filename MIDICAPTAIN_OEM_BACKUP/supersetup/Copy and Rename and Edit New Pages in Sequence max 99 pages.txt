@@ -1,0 +1,1 @@
+You can add pages yourself, with a maximum limit of page 19. Therefore, a total of 20 pages (page0-page19) are supported.

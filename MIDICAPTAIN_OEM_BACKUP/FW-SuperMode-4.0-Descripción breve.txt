@@ -1,0 +1,125 @@
+Super Modo: Configuración de Funciones y Explicación de Palabras Clave para FW-SuperMD4.0
+(AI translated)
+
+(1) Hay 4 momentos de activación de teclas compatibles, que son: presionado corto, liberado corto, presionado largo, liberado largo. Las palabras clave correspondientes son: short_dwX, short_upX, longX, long_upX, donde X es un número del 1 al 9, correspondiente a la X-ésima vez que se presiona la tecla.
+
+	Por ejemplo: short_dw1 = [1][PC][5][-] significa que en el primer momento de presionado corto se envía un comando PC con valor 5, en el canal MIDI 1.
+
+	Consejo: Si se necesita que los presionados cortos y largos sean eventos completamente independientes, solo podemos definir la liberación corta y el largo, es decir short_upX y longX, de esta manera, no habrá acciones de presionado corto antes de activar el largo.
+
+(2) Cada momento de activación puede definir una combinación de comandos de control mixtos, incluyendo comandos MIDI PC, CC, NT (nota) e instrucciones HID para teclado y ratón. Puede ser un solo comando o una combinación de varios comandos, sin límite de cantidad.
+
+	El formato de cada comando consta de 4 corchetes [][][][], a continuación se presentan ejemplos de 4 tipos diferentes de comandos individuales:
+
+	[1][PC][8][-] significa un comando PC, enviando PC8, en el canal MIDI 1.
+	[2][CC][10][127] significa un comando CC, enviando CC10 con valor 127, en el canal MIDI 2.
+	[1][NT][60][127] significa un comando de nota, enviando la nota 60 con una velocidad de 127, en el canal MIDI 1.
+	[send][HID][-][A] significa un comando HID de teclado y ratón, enviando una pulsación rápida y suelta, con la tecla A.
+
+	Puedes agrupar múltiples comandos en secuencia, cada grupo consta de 4 corchetes, como short_dw1 = [1][PC][8][-] [2][CC][10][127] [3][CC][20][127] [send][HID][-][A]... Ten en cuenta el formato, puede haber espacios pero no saltos de línea.
+
+(3) La palabra clave keytimes puede definir el ciclo de múltiples presiones de una tecla, se puede configurar un conjunto diferente de comandos para cada presión.
+
+	keytimes = [1] significa que esta tecla solo tiene una función definida.
+	keytimes = [5] significa que esta tecla tiene una función de ciclo de 5 veces, se pueden configurar 5 conjuntos diferentes de comandos, con un máximo de 9 veces.
+
+(4) Todos los contenidos de configuración se encuentran en el directorio supersetup, en archivos llamados pageX.txt. Cada página es un conjunto de funciones de control y se puede cambiar de página mediante una pulsación larga en el botón más a la derecha. Se pueden tener hasta 99 páginas.
+
+(5) En cada archivo pageX.txt se definen tres partes principales. Primero está [globalsetup], donde se definen parámetros generales del dispositivo y de cada página. Nota: esta parte solo será efectiva si se coloca en page0.txt y se reinicia el dispositivo.
+
+	ledbright = [30] Define la luminosidad del anillo de luz de los botones, entre 1 y 100. Se recomienda un rango de 20 a 50.
+
+	screenbright = [80] Brillo de la pantalla, entre 1 y 100. Se recomienda un rango de 30 a 100.
+
+	dark_fonts = [off] Interruptor de fuentes oscuras. Se recomienda apagarlo si el fondo de pantalla es oscuro, y encenderlo si es claro.
+
+	wallpaper = [wp1] Configuración del fondo de pantalla. Se recomienda dejarlo en wp1 y reemplazar la imagen de fondo con una de 240x240 píxeles en formato bmp de 24 bits, renombrándola como wp1.
+
+	long_press_timing = [1] Tiempo de detección de pulsación larga, puede ser 1 / 1.5 / 2 / 2.5, en segundos.
+
+	WIRELESS_2.4G = [on] Interruptor del módulo interno de 2.4G, on/off. Solo es válido para las versiones azul y dorada del interruptor 10-. Lo mismo aplica para las opciones siguientes.
+
+	WIRELESS_ID = [8] ID del módulo inalámbrico, debe coincidir con el MIDI MATE emparejado. Por defecto, todos son 8. Si se utilizan múltiples controles inalámbricos simultáneamente, configúrelos con IDs diferentes.
+
+	WIRELESS_dB = [6] Configuración de potencia del módulo inalámbrico. 0:12dBm, 1:10dBm, 2:9dBm, 3:8dBm, 4:6dBm, 5:3dBm, 6:0dBm, 7:-2dBm, 8:-5dBm, 9:-10dBm, 10:-15dBm, 11:-20dBm, 12:-25dBm, 13:-30dBm, 14:-25dBm.
+
+(6) Luego está [PAGE], donde se definen los parámetros de cada página.
+
+	page_name = [HXLP] Define el nombre de la página, se recomiendan 4 letras mayúsculas.
+
+	exp1_CH = [1] Canal MIDI del pedal de expresión 1.
+	exp1_CC = [1] Número de control MIDI del pedal de expresión 1.
+
+	exp2_CH = [1] Canal MIDI del pedal de expresión 2.
+	exp2_CC = [2] Número de control MIDI del pedal de expresión 2.
+
+	encoder_CC = [90] Número de control MIDI del codificador.
+	encoder_NAME = [MYCC] Nombre de la función del codificador.
+
+	midithrough = [on] Interruptor MIDI bypass, on/off.
+
+	display_number_ABC = [abc3] Selección del modo de visualización en PC, 123 / abc3 / abc4 / abc5 / abc8 corresponden a grupos de números o letras, con intervalos de 3, 4, 5, 8.
+
+	group_number = [3] Configuración adicional del intervalo de grupos, útil cuando se selecciona el modo numérico 123.
+
+	display_pc_offset = [1] 0 para que el valor de PC se muestre desde 0, 1 para que se muestre desde 1, para alinearlo con diferentes dispositivos host.
+
+	display_bank_offset = [1] 0 para iniciar los grupos desde 0, 1 para iniciarlos desde 1, en caso de grupos.
+
+(7) La configuración específica de los botones se presenta como [key0], [key1], [key2], [key3], [key4], [key5], etc., según la cantidad de pines. Aquí está un ejemplo con [key0]:
+
+	keytimes = [3] Configura el botón para un ciclo de pulsación de 3 veces.
+
+	ledmode = [normal] Configura el modo de LED del botón como normal, donde el color LED corresponde a la cantidad de veces presionadas.
+
+	ledmode puede ser normal / select / tap. select significa que solo un botón seleccionado se ilumina a la vez, mientras que tap es para un efecto de parpadeo especialmente para marcar. Ten en cuenta que select tiene un significado adicional: si un botón configurado para múltiples ciclos se ilumina en select, al presionar otro botón durante el ciclo, el estado del ciclo del botón volverá al estado inicial, es decir, la función definida en la primera pulsación. En cambio, si ledmode es normal, el ciclo continuará desde donde se dejó.
+
+	ledcolor1 = [0x666666][0x666666][0xff0000] Define el color del primer ciclo de pulsación (gris, gris, rojo), donde los tres corchetes representan los tres segmentos del anillo de luz. El prefijo 0x indica un número hexadecimal, y los tres componentes RGB representan los valores de rojo, verde y azul. Por ejemplo, 0xff0000 representa rojo (ff para 256), verde 00, azul 00. Puedes buscar en línea los valores de color deseados.
+
+	short_dw1 = [1][CC][69][0] Define que en la primera pulsación corta se envíe un mensaje CC en el canal 1, CC69, valor 0.
+
+	ledcolor2 = [0xff0000][0x666666][0x666666] Define el color del segundo ciclo de pulsación (rojo, gris, gris).
+
+	short_dw2 = [1][CC][69][1] Define que en la segunda pulsación corta se envíe un mensaje CC en el canal 1, CC69, valor 1.
+
+	ledcolor3 = [0x666666][0xff0000][0x666666] Define el color del tercer ciclo de pulsación (gris, rojo, gris).
+
+	short_dw3 = [1][CC][69][2] Define que en la tercera pulsación corta se envíe un mensaje CC en el canal 1, CC69, valor 2.
+
+(8) Explicación de otras palabras clave predefinidas y su uso
+
+	Ten en cuenta que es importante respetar mayúsculas y minúsculas.
+
+	[1][PC][inc1][-] Significa valor actual de PC +1, puede ser inc1 / inc2 / inc3 / inc4 / inc5 para +1, +2, +3, +4, +5 respectivamente.
+	[1][PC][dec1][-] Significa valor actual de PC -1, puede ser dec1 / dec2 / dec3 / dec4 / dec5 para -1, -2, -3, -4, -5 respectivamente.
+	[2][PC][random][-] random significa enviar un valor de PC aleatorio, en el canal MIDI 2.
+	[1][PC][auto][bank_inc] Significa que PC se agrupa automáticamente y se envía el número de grupo +1.
+	[1][PC][auto][bank_dec] Significa que PC se agrupa automáticamente y se envía el número de grupo -1.
+	[1][PC][auto][0] a [1][PC][auto][7] Significa que PC se agrupa automáticamente y se envía el PC del sonido correspondiente en el grupo.
+
+	[send][HID][-][A] Instrucción de teclado, tecla A, pulsación rápida y liberación.
+	[press][HID][-][A] Instrucción de teclado, tecla A, simulación de solo pulsación, sin liberación.
+	[release][HID][-][A] Instrucción de teclado, tecla A, simulación de solo liberación, sin pulsación.
+	[release][HID][-][all] Instrucción de teclado, liberar todas las teclas.
+	[delay][HID][-][50] Instrucción de retraso, en milisegundos.
+
+	[send][HID][Ctrl][A] Instrucción de teclado, tecla compuesta, el tercer corchete es opcional y puede ser Ctrl / Shift / Alt / Option / Windows.
+
+	Las teclas admitidas en el cuarto corchete de las instrucciones de simulación de mouse y teclado son:
+
+	A-Z, 0-9, F1-F12, Mouse_L (botón izquierdo del mouse presionado), Mouse_R (botón derecho del mouse presionado),
+	Space, Esc, Caps, Right, Left, Up, Down, End, Del, PageUp, PageDown, Enter, Pause, Table, BackSpace, Home, Ins, PrintS (Imprimir pantalla).
+
+(9) Consejos de funcionalidad
+
+	Después de usar la instrucción NT note, es posible que el sonido de la nota continúe, en este caso, se necesita agregar una instrucción de nota con una velocidad de 0 para detener el sonido.
+	En muchos casos, también se puede utilizar la instrucción CC general [1][CC][123][0] para silenciar el sonido, aunque esto depende de si el dispositivo lo admite.
+
+	Al usar [press][HID][-][A] para simular la pulsación de una tecla, asegúrate siempre de configurar la instrucción correspondiente de liberación, de lo contrario, la computadora seguirá respondiendo como si la tecla estuviera presionada, lo que puede causar problemas como bloqueos del sistema.
+
+	Después de enviar la instrucción de retraso [delay][HID][-][50], el dispositivo no responderá a ninguna acción durante el tiempo de retraso. Evita configurar tiempos de retraso demasiado largos.
+
+	El dispositivo recuerda el valor de PC actual y la página cada 30 segundos. Durante el almacenamiento en la memoria del dispositivo, puede haber un breve retraso en la respuesta.
+
+	La transición a la página actual puede ser controlada desde el MIDI IN externo, la instrucción correspondiente se define como CC 20 XX, donde XX es el número de página al que se desea saltar, asegúrate de que XX esté dentro del rango de páginas actual del dispositivo.
+

@@ -1,0 +1,47 @@
+# See below default mapping of the key# and the ID position
+# key1 (ID:0)----key2 (ID:1)----key3 (ID:2)----key4 (ID:3)----key5 (ID:4)
+# keyA (ID:5)----keyB (ID:6)----keyC (ID:7)----keyD (ID:8)----keyE (ID:9)
+
+Key_ID                = [2] # Quick way to change or swap key positions
+Key_Color_Overwrite   = [0] # 0:Disable   1:Enable 
+Key_Color_User        = [0x00FF00]
+
+# Settings for all press-down actions
+
+Key_Press_Eable       = [1] # 0:Disable   1:Enable 
+Key_Press_MODE        = [2] # 0:PC        1:CC       2:NOTE      3:UP     4:DOWN
+Key_Press_PC_MODE     = [1] # 0:AUTO      1:FIXED
+Key_Press_PC_FIXED    = [7] # 0-127 FIXED VALUE
+Key_Press_CC_NUMBER   = [22] # 0-127
+Key_Press_CC_VALUE    = [127] # 0-127
+Key_Press_CC_SCENE    = [0] # 0: OFF      1:ON  Control the LED work as scene control
+Key_Press_CC_TAP      = [0] # 0: OFF      1:ON  Enable when the key is for TAP using
+Key_Press_CC_TOGGLE   = [0] # 0:OFF       1:ON  Auto toggle between SubNum and 0 		
+Key_Press_NOTE_NUMBER = [D#5] # 0-127 Please refer to the note table at the end
+Key_Press_NOTE_STRIKE = [127] # 0-127 Note loudness
+
+# Settings for all release-up actions (For "moment" function the "Release" action must be enabled)
+
+Key_Release_Eable       = [1] # 0:Disable   1:Enable 
+Key_Release_MODE        = [2] # 0:PC        1:CC       2:NOTE      3:UP     4:DOWN
+Key_Release_PC_MODE     = [0] # 0:AUTO      1:FIXED
+Key_Release_PC_FIXED    = [8] # 0-127 FIXED VALUE
+Key_Release_CC_NUMBER   = [3] # 0-127
+Key_Release_CC_VALUE    = [7] # 0-127
+Key_Release_CC_TOGGLE   = [1] # 0:OFF       1:ON  Auto toggle between SubNum and 0
+Key_Release_NOTE_NUMBER = [D#5] # 0-127 Please refer to the following note table
+Key_Release_NOTE_STRIKE = [0] # 0-127 Note loudness
+
+# MIDI NOTE TABLE
+Octave	C	C#	D	D#	E 	F 	F#	G 	G#	A 	A#	B
+	0 	0 	1 	2 	3 	4 	5 	6 	7 	8 	9 	10 	11 	
+	1 	12 	13 	14 	15 	16 	17 	18 	19 	20 	21 	22 	23
+	2 	24 	25 	26 	27 	28 	29 	30 	31 	32 	33 	34 	35
+	3 	36 	37 	38 	39 	40 	41 	42 	43 	44 	45 	46 	47
+	4 	48 	49 	50 	51 	52 	53 	54 	55 	56 	57 	58 	59
+	5 	60 	61 	62 	63 	64 	65 	66 	67 	68 	69 	70 	71
+	6 	72 	73 	74 	75 	76 	77 	78 	79 	80 	81 	82 	83
+	7 	84 	85 	86 	87 	88 	89 	90 	91 	92 	93 	94 	95
+	8 	96 	97 	98 	99 	100	101	102	103	104	105	106	107
+	9 	108	109	110	111	112	113	114	115	116	117	118	119
+	10 	120	121	122	123	124	125	126	127
