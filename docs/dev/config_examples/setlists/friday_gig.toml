@@ -1,0 +1,109 @@
+# MIDICaptain Remedy - Setlist Configuration
+# Navigate through songs with Up/Down buttons, each song can trigger MIDI changes
+
+[setlist]
+name = "Friday Night Gig"
+date = "2024-01-19"
+venue = "The Blue Note"
+default_page = "katana_live"            # Page to use unless song overrides
+
+# ─────────────────────────────────────────────────────────────────
+# Songs
+# ─────────────────────────────────────────────────────────────────
+
+[[songs]]
+name = "Intro / Soundcheck"
+notes = "Clean tone, check levels"
+# Actions to execute when this song is selected
+on_enter = [
+    { type = "midi_pc", program = 1 },          # Select CH1 (clean)
+    { type = "sysex", profile = "katana", param = "gain", value = 30 },
+    { type = "sysex", profile = "katana", param = "reverb_toggle", value = 1 },
+]
+
+[[songs]]
+name = "Sweet Child O' Mine"
+notes = "Start clean, kick boost for solo at 3:20"
+on_enter = [
+    { type = "midi_pc", program = 2 },          # CH2 - slight crunch
+    { type = "sysex", profile = "katana", param = "delay_toggle", value = 1 },
+    { type = "sysex", profile = "katana", param = "delay_time", value = 380 },
+]
+# Optional: use a different page for this song
+# page = "sweet_child_custom"
+
+[[songs]]
+name = "Pride and Joy"
+notes = "Texas blues - use bridge pickup"
+on_enter = [
+    { type = "midi_pc", program = 2 },
+    { type = "sysex", profile = "katana", param = "boost_type", value = 0x0A },  # Blues Drive
+    { type = "sysex", profile = "katana", param = "boost_drive", value = 45 },
+]
+
+[[songs]]
+name = "Paranoid"
+notes = "Full gain, no effects"
+on_enter = [
+    { type = "midi_pc", program = 4 },          # CH4 - high gain
+    { type = "sysex", profile = "katana", param = "boost_toggle", value = 0 },
+    { type = "sysex", profile = "katana", param = "mod_toggle", value = 0 },
+    { type = "sysex", profile = "katana", param = "delay_toggle", value = 0 },
+    { type = "sysex", profile = "katana", param = "reverb_toggle", value = 0 },
+]
+
+[[songs]]
+name = "Hotel California"
+notes = "12-string intro (use acoustic sim), switch to crunch for solo"
+on_enter = [
+    { type = "midi_pc", program = 1 },
+    { type = "sysex", profile = "katana", param = "mod_type", value = 0x1F },   # AC Guitar Sim
+    { type = "sysex", profile = "katana", param = "mod_toggle", value = 1 },
+    { type = "sysex", profile = "katana", param = "chorus_toggle", value = 1 },
+]
+
+[[songs]]
+name = "Comfortably Numb"
+notes = "Clean verse, HUGE solo tone - use expression for volume swells"
+page = "pink_floyd"                     # Use custom page with volume swell setup
+on_enter = [
+    { type = "midi_pc", program = 1 },
+    { type = "sysex", profile = "katana", param = "delay_toggle", value = 1 },
+    { type = "sysex", profile = "katana", param = "delay_time", value = 540 },
+    { type = "sysex", profile = "katana", param = "delay_feedback", value = 40 },
+    { type = "sysex", profile = "katana", param = "reverb_toggle", value = 1 },
+    { type = "sysex", profile = "katana", param = "reverb_type", value = 0x03 }, # Hall
+]
+
+[[songs]]
+name = "All Along the Watchtower"
+notes = "Hendrix tone - use wah throughout"
+on_enter = [
+    { type = "midi_pc", program = 3 },
+    { type = "sysex", profile = "katana", param = "mod_type", value = 0x02 },   # Pedal Wah
+    { type = "sysex", profile = "katana", param = "mod_toggle", value = 1 },
+    { type = "sysex", profile = "katana", param = "boost_type", value = 0x13 }, # 60s Fuzz
+]
+
+[[songs]]
+name = "Encore: Johnny B. Goode"
+notes = "Classic rock tone, have fun!"
+on_enter = [
+    { type = "midi_pc", program = 2 },
+    { type = "sysex", profile = "katana", param = "boost_type", value = 0x0B }, # Overdrive
+    { type = "sysex", profile = "katana", param = "boost_toggle", value = 1 },
+]
+
+# ─────────────────────────────────────────────────────────────────
+# Setlist Settings
+# ─────────────────────────────────────────────────────────────────
+
+[settings]
+# Show next song name on display
+show_next_song = true
+# Require double-tap to advance (prevents accidental changes)
+confirm_advance = false
+# Wrap around at end of setlist
+wrap_around = true
+# Auto-execute on_enter actions when song changes
+auto_execute = true

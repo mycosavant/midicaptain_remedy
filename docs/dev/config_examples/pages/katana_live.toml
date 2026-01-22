@@ -1,0 +1,138 @@
+# MIDICaptain Remedy - Page Configuration
+# This page is optimized for live performance with BOSS Katana
+
+[page]
+name = "Katana Live"
+profile = "katana"              # Uses the Katana device profile
+layout = "katana_live"          # Display layout to use
+
+# ─────────────────────────────────────────────────────────────────
+# Top Row: Effects Toggles (A, B, C, D)
+# ─────────────────────────────────────────────────────────────────
+
+[buttons.A]
+label = "BOOST"
+color = "green"
+# Toggle boost on/off (CC#16 is Katana's boost toggle)
+on_press = { type = "midi_cc", cc = 16, value = "toggle" }
+# LED follows the CC value received back from amp
+led_feedback = { source = "midi_cc", cc = 16 }
+# Long press opens boost settings submenu
+on_long_press = { type = "page_push", page = "boost_edit" }
+
+[buttons.B]
+label = "MOD"
+color = "blue"
+on_press = { type = "midi_cc", cc = 17, value = "toggle" }
+led_feedback = { source = "midi_cc", cc = 17 }
+on_long_press = { type = "page_push", page = "mod_edit" }
+
+[buttons.C]
+label = "DELAY"
+color = "amber"
+on_press = { type = "midi_cc", cc = 18, value = "toggle" }
+led_feedback = { source = "midi_cc", cc = 18 }
+on_long_press = { type = "page_push", page = "delay_edit" }
+
+[buttons.D]
+label = "REVERB"
+color = "purple"
+on_press = { type = "midi_cc", cc = 19, value = "toggle" }
+led_feedback = { source = "midi_cc", cc = 19 }
+on_long_press = { type = "page_push", page = "reverb_edit" }
+
+# ─────────────────────────────────────────────────────────────────
+# Bottom Row: Preset/Channel Selection (1, 2, 3, 4)
+# ─────────────────────────────────────────────────────────────────
+
+[buttons."1"]
+label = "CH1"
+color = "white"
+# Program Change to select Channel 1
+on_press = { type = "midi_pc", program = 1 }
+# LED indicates which channel is active (radio button behavior)
+led_feedback = { source = "midi_pc", program = 1, mode = "radio" }
+
+[buttons."2"]
+label = "CH2"
+color = "white"
+on_press = { type = "midi_pc", program = 2 }
+led_feedback = { source = "midi_pc", program = 2, mode = "radio" }
+
+[buttons."3"]
+label = "CH3"
+color = "white"
+on_press = { type = "midi_pc", program = 3 }
+led_feedback = { source = "midi_pc", program = 3, mode = "radio" }
+
+[buttons."4"]
+label = "CH4"
+color = "white"
+on_press = { type = "midi_pc", program = 4 }
+led_feedback = { source = "midi_pc", program = 4, mode = "radio" }
+
+# ─────────────────────────────────────────────────────────────────
+# Navigation Buttons (Up, Down)
+# ─────────────────────────────────────────────────────────────────
+
+[buttons.up]
+label = "BANK+"
+color = "cyan"
+on_press = { type = "bank_up" }        # Next bank of presets
+on_long_press = { type = "page_next" } # Or switch to next page
+
+[buttons.down]
+label = "TUNER"
+color = "cyan"
+on_press = { type = "tuner_toggle" }   # Enable tuner mode
+on_long_press = { type = "page_prev" }
+
+# ─────────────────────────────────────────────────────────────────
+# Rotary Encoder
+# ─────────────────────────────────────────────────────────────────
+
+[encoder]
+# Encoder controls master volume by default
+bind = { type = "midi_cc", cc = 7 }    # CC7 is volume
+sensitivity = 2                         # Steps per detent
+acceleration = true                     # Faster = bigger jumps
+
+# Press encoder to cycle through what it controls
+on_press = { type = "encoder_mode_cycle", modes = ["volume", "gain", "treble"] }
+
+# Encoder modes define what parameter the encoder controls
+[encoder.modes.volume]
+label = "VOLUME"
+bind = { type = "midi_cc", cc = 7 }
+display = true                          # Show value on screen
+
+[encoder.modes.gain]
+label = "GAIN"
+bind = { type = "sysex", profile = "katana", param = "gain" }
+display = true
+
+[encoder.modes.treble]
+label = "TREBLE"
+bind = { type = "sysex", profile = "katana", param = "treble" }
+display = true
+
+# ─────────────────────────────────────────────────────────────────
+# Expression Pedals
+# ─────────────────────────────────────────────────────────────────
+
+[expression.pedal1]
+# Expression pedal 1 controls wah
+bind = { type = "sysex", profile = "katana", param = "pedal_wah_pos" }
+curve = "linear"
+min_out = 0
+max_out = 100
+# Auto-engage: when pedal moves past threshold, enable the wah effect
+auto_engage = { threshold = 5, action = { type = "midi_cc", cc = 17, value = 127 } }
+auto_disengage = { threshold = 3, action = { type = "midi_cc", cc = 17, value = 0 } }
+
+[expression.pedal2]
+# Expression pedal 2 controls volume
+bind = { type = "midi_cc", cc = 7 }
+curve = "log"                           # Logarithmic for natural volume feel
+min_out = 0
+max_out = 127

@@ -1,0 +1,73 @@
+# MIDICaptain Remedy - Global Configuration
+# This file controls system-wide settings
+
+[device]
+name = "My MIDI Captain"      # Shows on boot screen
+version = "1.0.0"
+
+# ─────────────────────────────────────────────────────────────────
+# MIDI Settings
+# ─────────────────────────────────────────────────────────────────
+[midi]
+channel = 1                   # Default MIDI channel (1-16)
+usb_enabled = true            # Enable USB-MIDI
+din_enabled = true            # Enable 5-pin DIN MIDI
+merge_inputs = true           # Route DIN input to USB output (and vice versa)
+
+# ─────────────────────────────────────────────────────────────────
+# Display Settings
+# ─────────────────────────────────────────────────────────────────
+[display]
+brightness = 80               # Backlight brightness (0-100)
+timeout = 0                   # Screen timeout in seconds (0 = never)
+rotation = 180                # Display rotation (0, 90, 180, 270)
+theme = "dark"                # "dark" or "light"
+
+# ─────────────────────────────────────────────────────────────────
+# LED Settings
+# ─────────────────────────────────────────────────────────────────
+[leds]
+brightness = 50               # LED brightness (0-100)
+idle_brightness = 20          # Brightness when button not active
+idle_mode = "dim"             # "dim", "off", or "rainbow"
+
+# ─────────────────────────────────────────────────────────────────
+# Startup Behavior
+# ─────────────────────────────────────────────────────────────────
+[startup]
+profile = "katana"            # Default device profile
+page = "main"                 # Default page to load
+setlist = ""                  # Optional: auto-load a setlist
+query_device = true           # Query device state on startup (if supported)
+
+# ─────────────────────────────────────────────────────────────────
+# Color Palette (customize your colors)
+# ─────────────────────────────────────────────────────────────────
+[colors]
+# Format: [R, G, B] values 0-255
+off = [0, 0, 0]
+red = [255, 0, 0]
+green = [0, 255, 0]
+blue = [0, 0, 255]
+yellow = [255, 255, 0]
+amber = [255, 128, 0]
+purple = [128, 0, 255]
+cyan = [0, 255, 255]
+white = [255, 255, 255]
+pink = [255, 64, 128]
+
+# Katana-style effect colors
+boost = [0, 255, 0]           # Green for boost/drive
+mod = [0, 128, 255]           # Blue for modulation
+delay = [255, 128, 0]         # Amber for delay
+reverb = [128, 0, 255]        # Purple for reverb
+
+# ─────────────────────────────────────────────────────────────────
+# Tuner Settings
+# ─────────────────────────────────────────────────────────────────
+[tuner]
+toggle_cc = 25                # CC number to toggle tuner mode
+reference_pitch = 440.0       # A4 reference frequency (Hz)
+pitch_bend_range = 200        # Pitch bend range in cents
+use_flats = false             # Use flats (Bb) instead of sharps (A#)
+in_tune_threshold = 5         # Cents deviation to be considered "in tune"

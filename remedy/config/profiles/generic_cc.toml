@@ -1,0 +1,116 @@
+# MIDICaptain Remedy - Generic CC Profile
+# A simple profile for any MIDI-capable device
+# No SysEx, just standard CC and Program Change messages
+
+[profile]
+name = "Generic CC"
+description = "Universal MIDI controller mode - works with any MIDI device"
+
+# No SysEx configuration needed for this profile
+# All control is via standard MIDI CC and PC messages
+
+# ─────────────────────────────────────────────────────────────────
+# Default Button Mappings
+# Users can override these in their page configs
+# ─────────────────────────────────────────────────────────────────
+
+[defaults.buttons]
+# Top row: CC toggles
+A = { cc = 80, mode = "toggle" }
+B = { cc = 81, mode = "toggle" }
+C = { cc = 82, mode = "toggle" }
+D = { cc = 83, mode = "toggle" }
+
+# Bottom row: Program changes
+"1" = { pc = 0 }
+"2" = { pc = 1 }
+"3" = { pc = 2 }
+"4" = { pc = 3 }
+
+# Navigation
+up = { action = "bank_up", increment = 4 }    # Jump 4 programs
+down = { action = "bank_down", increment = 4 }
+
+[defaults.encoder]
+cc = 1                                         # Mod wheel by default
+mode = "absolute"                              # or "relative"
+
+[defaults.expression]
+pedal1 = { cc = 11 }                          # Expression
+pedal2 = { cc = 7 }                           # Volume
+
+# ─────────────────────────────────────────────────────────────────
+# Common CC Definitions (for reference and UI labels)
+# These are standard MIDI CC numbers
+# ─────────────────────────────────────────────────────────────────
+
+[cc_names]
+0 = "Bank Select MSB"
+1 = "Mod Wheel"
+2 = "Breath"
+4 = "Foot Controller"
+5 = "Portamento Time"
+7 = "Volume"
+8 = "Balance"
+10 = "Pan"
+11 = "Expression"
+64 = "Sustain Pedal"
+65 = "Portamento On/Off"
+66 = "Sostenuto"
+67 = "Soft Pedal"
+68 = "Legato"
+69 = "Hold 2"
+# 70-79 are sound controllers
+70 = "Sound Variation"
+71 = "Resonance"
+72 = "Release"
+73 = "Attack"
+74 = "Cutoff"
+75 = "Sound Ctrl 6"
+76 = "Sound Ctrl 7"
+77 = "Sound Ctrl 8"
+78 = "Sound Ctrl 9"
+79 = "Sound Ctrl 10"
+# 80-83 are general purpose
+80 = "GP Button 1"
+81 = "GP Button 2"
+82 = "GP Button 3"
+83 = "GP Button 4"
+# 91-95 are effects
+91 = "Reverb"
+92 = "Tremolo"
+93 = "Chorus"
+94 = "Detune"
+95 = "Phaser"
+
+# ─────────────────────────────────────────────────────────────────
+# Templates for common use cases
+# Users can reference these in their page configs
+# ─────────────────────────────────────────────────────────────────
+
+[templates.daw_transport]
+description = "Control DAW transport (requires DAW MIDI mapping)"
+buttons = [
+    { id = "1", label = "PLAY", cc = 117 },
+    { id = "2", label = "STOP", cc = 118 },
+    { id = "3", label = "REC", cc = 119 },
+    { id = "4", label = "LOOP", cc = 116 },
+]
+
+[templates.amp_effects]
+description = "Standard 4-effect toggle layout"
+buttons = [
+    { id = "A", label = "DRIVE", cc = 80 },
+    { id = "B", label = "MOD", cc = 81 },
+    { id = "C", label = "DELAY", cc = 82 },
+    { id = "D", label = "REVERB", cc = 83 },
+]
+
+[templates.looper]
+description = "Basic looper control"
+buttons = [
+    { id = "A", label = "REC/PLAY", cc = 86 },
+    { id = "B", label = "STOP", cc = 87 },
+    { id = "C", label = "UNDO", cc = 88 },
+    { id = "D", label = "CLEAR", cc = 89 },
+]

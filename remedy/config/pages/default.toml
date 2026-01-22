@@ -1,0 +1,90 @@
+# MIDICaptain Remedy - Default Page Configuration
+# This page provides a basic Katana-compatible layout using standard MIDI CC/PC
+
+[page]
+name = "Default"
+description = "Basic MIDI controller layout compatible with any device"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top Row: Effect Toggles (A, B, C, D)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.A]
+label = "FX1"
+color = "green"
+on_press = { type = "midi_cc", cc = 80, value = "toggle" }
+
+[buttons.B]
+label = "FX2"
+color = "blue"
+on_press = { type = "midi_cc", cc = 81, value = "toggle" }
+
+[buttons.C]
+label = "FX3"
+color = "amber"
+on_press = { type = "midi_cc", cc = 82, value = "toggle" }
+
+[buttons.D]
+label = "FX4"
+color = "purple"
+on_press = { type = "midi_cc", cc = 83, value = "toggle" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bottom Row: Preset Selection (1, 2, 3, 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons."1"]
+label = "PRESET 1"
+color = "white"
+on_press = { type = "midi_pc", program = 0 }
+
+[buttons."2"]
+label = "PRESET 2"
+color = "white"
+on_press = { type = "midi_pc", program = 1 }
+
+[buttons."3"]
+label = "PRESET 3"
+color = "white"
+on_press = { type = "midi_pc", program = 2 }
+
+[buttons."4"]
+label = "PRESET 4"
+color = "white"
+on_press = { type = "midi_pc", program = 3 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Navigation Buttons
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.up]
+label = "BANK+"
+color = "cyan"
+on_press = { type = "midi_pc", program = 4 }
+on_long_press = { type = "page_next" }
+
+[buttons.down]
+label = "BANK-"
+color = "cyan"
+on_press = { type = "midi_pc", program = 5 }
+on_long_press = { type = "page_prev" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Encoder
+# ─────────────────────────────────────────────────────────────────────────────
+
+[encoder]
+bind = "midi_cc"
+fallback = { cc = 7 }                   # Volume
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Expression Pedals
+# ─────────────────────────────────────────────────────────────────────────────
+
+[expression.pedal1]
+bind = "midi_cc"
+cc = 1                                  # Mod wheel
+
+[expression.pedal2]
+bind = "midi_cc"
+cc = 7                                  # Volume
