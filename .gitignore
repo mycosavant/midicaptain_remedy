@@ -166,3 +166,4 @@ cython_debug/
 .vscode/
 *.code-workspace
 **/*:Zone.Identifier
+docs/dev/scripts/delete-zone-identifier-files.sh
