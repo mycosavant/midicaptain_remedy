@@ -169,4 +169,5 @@ cython_debug/
 docs/dev/scripts/delete-zone-identifier-files.sh
 docs/dev/DEVLOG.md
 docs/dev/SCRATCHPAD.md
-docs/dev/screenshots/Screenshot 2026-01-22 175846.png
+docs/dev/screenshots/
+docs/dev/KATANA/
