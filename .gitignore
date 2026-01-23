@@ -167,3 +167,5 @@ cython_debug/
 *.code-workspace
 **/*:Zone.Identifier
 docs/dev/scripts/delete-zone-identifier-files.sh
+docs/dev/DEVLOG.md
+docs/dev/SCRATCHPAD.md
