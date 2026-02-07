@@ -2,11 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Engineering Philosophy
+
+**Be proactive.** Do not write workarounds for old platform limitations when an upgrade is available. If a dependency, runtime, library, or tool has a newer stable version that would eliminate complexity, recommend upgrading immediately. The OEM firmware backup exists in `MIDICAPTAIN_OEM_BACKUP/` — there is always a safety net.
+
+**Production-grade code.** All code should be efficient, safe, stable, and secure. Follow industry best practices. This means:
+- No unnecessary abstractions, but no shortcuts that compromise reliability
+- Proper error handling at system boundaries
+- Memory-conscious patterns appropriate for embedded (RP2040 has 264KB RAM)
+- Clean separation of concerns across modules
+- Use platform-native features over custom reimplementations (e.g., use `tomllib` instead of a custom TOML parser when available)
+
+**Upgrade-first mindset.** When facing a limitation of the current platform/library version, check if a newer stable version resolves it before writing a workaround. Always prefer removing code over adding compatibility shims.
+
 ## Project Overview
 
 MIDICaptain Remedy is configuration-driven CircuitPython firmware for the Paint Audio MIDI Captain (RP2040-based MIDI footswitch controller). It replaces proprietary firmware with a customizable solution supporting arbitrary MIDI devices with deep integration for BOSS Katana amplifiers.
 
-**Target:** CircuitPython 7.3.1 on Raspberry Pi Pico (RP2040)
+**Target:** CircuitPython 10.0.3 on Raspberry Pi Pico (RP2040)
 
 ## Deployment Commands
 
@@ -16,6 +29,7 @@ There is no build system - CircuitPython firmware deploys via direct file copy:
 # 1. Enter Update Mode: Hold Switch1 (GP1) during power-on + USB connection
 # 2. Mount the MIDICAPTAIN USB drive
 # 3. Copy remedy/ contents to device root:
+#    remedy/boot.py    → /boot.py
 #    remedy/code.py    → /code.py
 #    remedy/main.py    → /main.py
 #    remedy/lib/       → /lib/
@@ -23,7 +37,9 @@ There is no build system - CircuitPython firmware deploys via direct file copy:
 # 4. Disconnect USB, normal boot runs firmware
 ```
 
-**Serial Debugging:** Use mu editor with CircuitPython support. Comment out `supervisor.disable_autoreload()` in boot.py for REPL access.
+**Serial Debugging:** Use mu editor with CircuitPython support, or `python -m serial.tools.miniterm COM3 115200` from Windows PowerShell (WSL cannot see USB COM ports).
+
+**CRITICAL: boot.py and SPI pins.** In CircuitPython 10 on RP2040, `import storage` in boot.py claims SPI1 pins (GP14/GP15) as a side effect, breaking display initialization. boot.py must NOT import the `storage` module. The same applies to `supervisor.disable_autoreload()` and `storage.remount()`. See `remedy/boot.py` comments for details.
 
 **Test Scripts:** Individual hardware tests in `scripts/` (switch.py, encoder.py, led.py, midi_uart.py, expressionin.py, display_test.py).
 
@@ -59,7 +75,7 @@ There is no build system - CircuitPython firmware deploys via direct file copy:
 | Module | Purpose |
 |--------|---------|
 | `pins.py` | GPIO constants, LED mapping (30 NeoPixels, 3 per switch) |
-| `config.py` | TOML parser, hierarchical config (global → profile → page) |
+| `config.py` | TOML config loader, hierarchical config (global → profile → page) |
 | `hardware.py` | Button debouncing, encoder, LEDs, expression pedals |
 | `events.py` | Event dispatcher, action types (CC, PC, SysEx, page nav) |
 | `midi.py` | USB+DIN MIDI, Roland SysEx with checksum, Katana helpers |
