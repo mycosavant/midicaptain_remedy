@@ -1,0 +1,621 @@
+# MIDICaptain Remedy - BOSS Katana Device Profile
+#
+# Compatibility: Gen1 (MkI), MkII, Gen3 (including Artist, Head, 50, 100)
+#
+# This profile uses a TIERED approach:
+#   Tier 1: Standard MIDI CC/PC (works on ALL Katana models)
+#   Tier 2: Core SysEx parameters (verified across generations)
+#   Tier 3: Gen3-specific parameters (detected at runtime)
+#
+# Based on:
+#   - Steven Hirsch reverse engineering (2017) - Gen1
+#   - CodeSmart/Robert Fransson MkII documentation (2020)
+#   - niikkoo/gumtown Gen3 reverse engineering (2024)
+#   - Community validation via FxFloorBoard and katana-midi-bridge
+
+[profile]
+name = "BOSS Katana"
+manufacturer = "Roland/BOSS"
+description = "Universal Katana control - works with all generations"
+version = "1.0.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1: STANDARD MIDI (Works on ALL Katana models, no SysEx required)
+# ═══════════════════════════════════════════════════════════════════════════════
+# These use standard MIDI CC and Program Change messages.
+# Configure in BOSS Tone Studio under MIDI Settings if defaults don't match.
+
+[midi]
+default_channel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Program Change: Channel/Preset Selection
+# ─────────────────────────────────────────────────────────────────────────────
+[midi.program_change]
+description = "Select amp channel/preset"
+
+# Default PC assignments (can be customized in BTS)
+[midi.program_change.presets]
+0 = { name = "Panel", description = "Current panel settings" }
+1 = { name = "CH1", description = "Channel 1" }
+2 = { name = "CH2", description = "Channel 2" }
+3 = { name = "CH3", description = "Channel 3" }
+4 = { name = "CH4", description = "Channel 4" }
+# Banks extend: PC 5-8 = Bank 2 (CH5-8), etc.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Control Change: Effect Toggles (Momentary)
+# ─────────────────────────────────────────────────────────────────────────────
+# These are the default CC assignments matching GA-FC behavior.
+# Value 127 = toggle on, 0 = toggle off (or use momentary: any value toggles)
+
+[midi.control_change.toggles]
+# Effect on/off toggles
+16 = { name = "Booster", type = "momentary", description = "Toggle Boost/Drive" }
+17 = { name = "Mod", type = "momentary", description = "Toggle Modulation effect" }
+18 = { name = "FX", type = "momentary", description = "Toggle FX slot" }
+19 = { name = "Delay", type = "momentary", description = "Toggle Delay" }
+20 = { name = "Reverb", type = "momentary", description = "Toggle Reverb" }
+21 = { name = "FX Loop", type = "momentary", description = "Toggle Send/Return loop" }
+
+# GA-FC footswitch assignments (configurable in BTS)
+80 = { name = "GA-FC CTL1", type = "momentary", description = "Assignable switch 1" }
+81 = { name = "GA-FC CTL2", type = "momentary", description = "Assignable switch 2" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Control Change: Expression Pedals (Continuous)
+# ─────────────────────────────────────────────────────────────────────────────
+[midi.control_change.expression]
+# Default expression pedal assignments
+1  = { name = "EXP Pedal", type = "continuous", min = 0, max = 127 }
+7  = { name = "Volume", type = "continuous", min = 0, max = 127 }
+11 = { name = "Expression", type = "continuous", min = 0, max = 127 }
+
+# Pedal assignments (what the expression pedal controls)
+# These can be changed per-preset in BTS
+[midi.control_change.pedal_targets]
+description = "What each expression pedal slot controls"
+exp1_default = "pedal_wah"      # or "volume", "pitch", etc.
+exp2_default = "volume"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Control Change: Other
+# ─────────────────────────────────────────────────────────────────────────────
+[midi.control_change.other]
+# Bank select (for accessing presets beyond 1-4)
+0  = { name = "Bank MSB", type = "value" }
+32 = { name = "Bank LSB", type = "value" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2: CORE SYSEX (Verified across Gen1, MkII, Gen3)
+# ═══════════════════════════════════════════════════════════════════════════════
+# These SysEx parameters have been tested on multiple generations.
+# Enable with: use_sysex = true in page config
+
+[sysex]
+enabled = true
+manufacturer_id = 0x41              # Roland
+
+# Model IDs (used in SysEx header)
+# The actual model bytes vary by generation but protocol is compatible
+model_id = [0x00, 0x00, 0x00, 0x33]
+
+# SysEx message structure
+prefix = [0xF0, 0x41, 0x00]         # F0 + Roland + Device ID
+# Full message: [prefix] [model_id] [operation] [address] [data] [checksum] [F7]
+
+# Operations
+query_op = 0x11                      # Request data
+set_op = 0x12                        # Send data
+
+# Checksum: Roland standard (7-bit sum, 128 - sum & 0x7F)
+checksum_algorithm = "roland"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Device Detection
+# ─────────────────────────────────────────────────────────────────────────────
+[sysex.detection]
+# Send Universal Identity Request to detect Katana generation
+identity_request = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7]
+
+# Response parsing (bytes after F0 7E 00 06 02 41)
+# Gen1:  33 03 00 00 [ver] 00 00 00 F7
+# MkII:  33 03 00 00 [ver] 00 00 00 F7 (different version byte)
+# Gen3:  [TBD - different model bytes]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor Mode (BTS Mode)
+# ─────────────────────────────────────────────────────────────────────────────
+[sysex.editor_mode]
+description = "Required for some SysEx operations"
+# Enter editor mode before making changes, exit when done
+enter = { address = [0x7F, 0x00, 0x00, 0x01], data = [0x01] }
+exit  = { address = [0x7F, 0x00, 0x00, 0x01], data = [0x00] }
+settle_time_ms = 100                 # Wait after entering
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amplifier Parameters (Core - all generations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.amp_type]
+name = "Amp Type"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x20]
+type = "enum"
+default = 1
+values = [
+    { value = 0, label = "Acoustic" },
+    { value = 1, label = "Clean" },
+    { value = 2, label = "Crunch" },
+    { value = 3, label = "Lead" },
+    { value = 4, label = "Brown" },
+]
+
+[sysex.parameters.sneaky_amp]
+name = "Sneaky Amp Type"
+tier = 2
+description = "Access hidden amp models (27 additional types)"
+address = [0x60, 0x00, 0x00, 0x51]
+type = "enum"
+values = [
+    # GT-100 preamp values - see katana-dev/docs for full list
+    { value = 0x00, label = "JC Clean" },
+    { value = 0x01, label = "Clean Twin" },
+    { value = 0x02, label = "Pro Crunch" },
+    { value = 0x03, label = "Deluxe Crunch" },
+    { value = 0x04, label = "Tweed" },
+    { value = 0x05, label = "VO Drive" },
+    { value = 0x06, label = "VO Lead" },
+    { value = 0x07, label = "Match Drive" },
+    { value = 0x08, label = "BG Lead" },
+    { value = 0x09, label = "BG Drive" },
+    { value = 0x0A, label = "MS 1959 I" },
+    { value = 0x0B, label = "MS 1959 II" },
+    { value = 0x0C, label = "MS Hi-Gain" },
+    { value = 0x0D, label = "R-Fier Vnt" },
+    { value = 0x0E, label = "R-Fier Mdn" },
+    { value = 0x0F, label = "T-Amp Lead" },
+    { value = 0x10, label = "T-Amp Crunch" },
+    { value = 0x11, label = "T-Amp Clean" },
+    { value = 0x12, label = "BOSS Drive" },
+    { value = 0x13, label = "Sldn" },
+    { value = 0x14, label = "5150 Drive" },
+    { value = 0x15, label = "Metal 5150" },
+    { value = 0x16, label = "Metal Lead" },
+    { value = 0x17, label = "Metal High" },
+    { value = 0x18, label = "CUSTOM" },
+    # ... more available
+]
+
+[sysex.parameters.gain]
+name = "Gain"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x21]
+type = "range"
+min = 0
+max = 100
+display = "{value}%"
+
+[sysex.parameters.volume]
+name = "Volume"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x22]
+type = "range"
+min = 0
+max = 100
+display = "{value}%"
+
+[sysex.parameters.bass]
+name = "Bass"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x23]
+type = "range"
+min = 0
+max = 100
+
+[sysex.parameters.middle]
+name = "Middle"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x24]
+type = "range"
+min = 0
+max = 100
+
+[sysex.parameters.treble]
+name = "Treble"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x25]
+type = "range"
+min = 0
+max = 100
+
+[sysex.parameters.presence]
+name = "Presence"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x26]
+type = "range"
+min = 0
+max = 100
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Effects - Boost/Drive Section
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.boost_sw]
+name = "Boost Switch"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x30]
+type = "bool"
+cc_alias = 16                        # Also controllable via CC#16
+
+[sysex.parameters.boost_type]
+name = "Boost Type"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x31]
+type = "enum"
+values = [
+    { value = 0x00, label = "Mid Boost" },
+    { value = 0x01, label = "Clean Boost" },
+    { value = 0x02, label = "Treble Boost" },
+    { value = 0x03, label = "Crunch OD" },
+    { value = 0x04, label = "Natural OD" },
+    { value = 0x05, label = "Warm OD" },
+    { value = 0x06, label = "Fat DS" },
+    { value = 0x08, label = "Metal DS" },
+    { value = 0x09, label = "Oct Fuzz" },
+    { value = 0x0A, label = "Blues Drive" },
+    { value = 0x0B, label = "Overdrive" },
+    { value = 0x0C, label = "T-Scream" },
+    { value = 0x0D, label = "Turbo OD" },
+    { value = 0x0E, label = "Distortion" },
+    { value = 0x0F, label = "Rat" },
+    { value = 0x10, label = "Guv DS" },
+    { value = 0x11, label = "DST+" },
+    { value = 0x12, label = "Metal Zone" },
+    { value = 0x13, label = "60s Fuzz" },
+    { value = 0x14, label = "Muff Fuzz" },
+]
+
+[sysex.parameters.boost_drive]
+name = "Boost Drive"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x32]
+type = "range"
+min = 0
+max = 100
+
+[sysex.parameters.boost_bottom]
+name = "Boost Bottom"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x33]
+type = "range"
+min = -50
+max = 50
+raw_min = 0
+raw_max = 100
+
+[sysex.parameters.boost_tone]
+name = "Boost Tone"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x34]
+type = "range"
+min = -50
+max = 50
+raw_min = 0
+raw_max = 100
+
+[sysex.parameters.boost_level]
+name = "Boost Level"
+tier = 2
+address = [0x60, 0x00, 0x00, 0x37]
+type = "range"
+min = 0
+max = 100
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Effects - Modulation Section
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.mod_sw]
+name = "Mod Switch"
+tier = 2
+address = [0x60, 0x00, 0x01, 0x40]
+type = "bool"
+cc_alias = 17
+
+[sysex.parameters.mod_type]
+name = "Mod Type"
+tier = 2
+address = [0x60, 0x00, 0x01, 0x41]
+type = "enum"
+values = [
+    { value = 0x00, label = "T.Wah" },
+    { value = 0x01, label = "Auto Wah" },
+    { value = 0x02, label = "Pedal Wah" },
+    { value = 0x03, label = "Comp" },
+    { value = 0x04, label = "Limiter" },
+    { value = 0x06, label = "Graphic EQ" },
+    { value = 0x07, label = "Para EQ" },
+    { value = 0x09, label = "Guitar Sim" },
+    { value = 0x0A, label = "Slow Gear" },
+    { value = 0x0C, label = "Wave Synth" },
+    { value = 0x0E, label = "Octave" },
+    { value = 0x0F, label = "Pitch Shift" },
+    { value = 0x10, label = "Harmonist" },
+    { value = 0x12, label = "AC Processor" },
+    { value = 0x13, label = "Phaser" },
+    { value = 0x14, label = "Flanger" },
+    { value = 0x15, label = "Tremolo" },
+    { value = 0x16, label = "Rotary" },
+    { value = 0x17, label = "Uni-V" },
+    { value = 0x19, label = "Slicer" },
+    { value = 0x1A, label = "Vibrato" },
+    { value = 0x1B, label = "Ring Mod" },
+    { value = 0x1C, label = "Humanizer" },
+    { value = 0x1D, label = "Chorus" },
+    { value = 0x1F, label = "AC Guitar Sim" },
+]
+
+# Pedal Wah parameters (commonly used with expression pedal)
+[sysex.parameters.wah_type]
+name = "Wah Type"
+tier = 2
+address = [0x60, 0x00, 0x01, 0x5C]
+type = "enum"
+values = [
+    { value = 0, label = "Cry Wah" },
+    { value = 1, label = "Vox Wah" },
+    { value = 2, label = "Fat Wah" },
+    { value = 3, label = "Light Wah" },
+    { value = 4, label = "7String Wah" },
+    { value = 5, label = "Reso Wah" },
+]
+
+[sysex.parameters.wah_position]
+name = "Wah Position"
+tier = 2
+address = [0x60, 0x00, 0x01, 0x5D]
+type = "range"
+min = 0
+max = 100
+realtime = true                      # Suitable for expression pedal control
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Effects - Delay Section
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.delay_sw]
+name = "Delay Switch"
+tier = 2
+address = [0x60, 0x00, 0x05, 0x60]
+type = "bool"
+cc_alias = 19
+
+[sysex.parameters.delay_type]
+name = "Delay Type"
+tier = 2
+address = [0x60, 0x00, 0x05, 0x61]
+type = "enum"
+values = [
+    { value = 0x00, label = "Digital" },
+    { value = 0x06, label = "Reverse" },
+    { value = 0x07, label = "Analog" },
+    { value = 0x08, label = "Tape Echo" },
+    { value = 0x09, label = "Modulate" },
+]
+
+[sysex.parameters.delay_time]
+name = "Delay Time"
+tier = 2
+address = [0x60, 0x00, 0x05, 0x62]
+type = "range"
+min = 1
+max = 2000
+size = 2                             # 2-byte value
+encoding = "roland_11bit"            # Special 11-bit encoding
+display = "{value}ms"
+
+[sysex.parameters.delay_feedback]
+name = "Delay Feedback"
+tier = 2
+address = [0x60, 0x00, 0x05, 0x64]
+type = "range"
+min = 0
+max = 100
+
+[sysex.parameters.delay_level]
+name = "Delay Level"
+tier = 2
+address = [0x60, 0x00, 0x05, 0x66]
+type = "range"
+min = 0
+max = 120
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Effects - Reverb Section
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.reverb_sw]
+name = "Reverb Switch"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x10]
+type = "bool"
+cc_alias = 20
+
+[sysex.parameters.reverb_type]
+name = "Reverb Type"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x11]
+type = "enum"
+values = [
+    { value = 0x01, label = "Room" },
+    { value = 0x03, label = "Hall" },
+    { value = 0x04, label = "Plate" },
+    { value = 0x05, label = "Spring" },
+    { value = 0x06, label = "Modulate" },
+]
+
+[sysex.parameters.reverb_time]
+name = "Reverb Time"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x12]
+type = "range"
+min = 0
+max = 99
+display_format = "0.1-10.0s"
+
+[sysex.parameters.reverb_level]
+name = "Reverb Level"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x18]
+type = "range"
+min = 0
+max = 100
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Noise Gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.noise_gate_sw]
+name = "Noise Gate"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x63]
+type = "bool"
+
+[sysex.parameters.noise_gate_threshold]
+name = "Gate Threshold"
+tier = 2
+address = [0x60, 0x00, 0x06, 0x64]
+type = "range"
+min = 0
+max = 100
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FX Loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.parameters.fx_loop_sw]
+name = "FX Loop"
+tier = 2
+address = [0x00, 0x00, 0x04, 0x00]
+type = "bool"
+cc_alias = 21
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Preset Operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+[sysex.presets]
+# Query current preset
+query_address = [0x00, 0x01, 0x00, 0x00]
+query_length = [0x00, 0x00, 0x00, 0x02]
+requires_editor_mode = true
+
+# Recall preset (requires editor mode)
+recall_address = [0x00, 0x01, 0x00, 0x00]
+# Data: [0x00, preset_num] where preset_num = 0-4 (Panel, CH1-4)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 3: GEN3-SPECIFIC PARAMETERS
+# ═══════════════════════════════════════════════════════════════════════════════
+# These are only available on Gen3 models. The firmware will skip these
+# if a Gen1/MkII is detected.
+
+[sysex.parameters.preamp_variation]
+name = "Preamp Variation"
+tier = 3
+min_generation = "gen3"
+address = [0x60, 0x00, 0x00, 0x52]   # TBD - needs verification
+type = "range"
+min = 0
+max = 100
+description = "Gen3 preamp character variation"
+
+[sysex.parameters.bloom]
+name = "Bloom"
+tier = 3
+min_generation = "gen3"
+address = [0x60, 0x00, 0x00, 0x53]   # TBD - needs verification
+type = "range"
+min = 0
+max = 100
+description = "Gen3 bloom/sustain enhancement"
+
+[sysex.parameters.cab_resonance]
+name = "Cabinet Resonance"
+tier = 3
+min_generation = "gen3"
+address = [0x60, 0x00, 0x00, 0x54]   # TBD - needs verification
+type = "enum"
+values = [
+    { value = 0, label = "Vintage" },
+    { value = 1, label = "Modern" },
+    { value = 2, label = "Deep" },
+]
+description = "Gen3 cabinet resonance character"
+
+[sysex.parameters.contour_led]
+name = "Contour LED"
+tier = 3
+min_generation = "gen3"
+address = [0x60, 0x00, 0x00, 0x55]   # TBD - needs verification
+type = "enum"
+values = [
+    { value = 0, label = "Off" },
+    { value = 1, label = "Green" },
+    { value = 2, label = "Red" },
+    { value = 3, label = "Yellow" },
+]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFAULT PAGE SUGGESTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+# These suggest how to map buttons for this profile
+
+[defaults.buttons]
+# Tier 1 approach: Use CC for effect toggles (works everywhere)
+A = { action = "midi_cc", cc = 16, label = "BOOST" }
+B = { action = "midi_cc", cc = 17, label = "MOD" }
+C = { action = "midi_cc", cc = 19, label = "DELAY" }
+D = { action = "midi_cc", cc = 20, label = "REVERB" }
+
+# Channel selection via Program Change
+"1" = { action = "midi_pc", program = 1, label = "CH1" }
+"2" = { action = "midi_pc", program = 2, label = "CH2" }
+"3" = { action = "midi_pc", program = 3, label = "CH3" }
+"4" = { action = "midi_pc", program = 4, label = "CH4" }
+
+# Navigation
+up = { action = "bank_up", label = "BANK+" }
+down = { action = "tuner", label = "TUNER" }
+
+[defaults.encoder]
+# Default to amp volume via SysEx (more precise than CC)
+bind = "sysex:volume"
+fallback = { action = "midi_cc", cc = 7 }   # If SysEx fails, use CC
+
+[defaults.expression]
+pedal1 = { bind = "sysex:wah_position", fallback = { cc = 1 } }
+pedal2 = { bind = "midi_cc", cc = 7 }       # Volume
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NOTES FOR IMPLEMENTATION
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 1. Start with Tier 1 (CC/PC) - this works immediately on any Katana
+# 2. Add Tier 2 (SysEx) after device connection is confirmed
+# 3. Query device identity to enable Tier 3 features on Gen3
+#
+# 4. Checksum calculation (Roland standard):
+#    vals = address_bytes + data_bytes
+#    accum = sum(vals) & 0x7F
+#    checksum = (128 - accum) & 0x7F
+#
+# 5. For bidirectional feedback:
+#    - CC toggles echo back automatically
+#    - SysEx requires explicit query after set (or trust the amp)
+#
+# 6. Expression pedal auto-engage:
+#    - When wah_position > threshold, send mod_sw = on
+#    - When wah_position < threshold, send mod_sw = off
+#    - Requires mod_type to be set to "Pedal Wah" first

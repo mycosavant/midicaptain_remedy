@@ -36,7 +36,7 @@ idle_mode = "dim"             # "dim", "off", or "rainbow"
 # ─────────────────────────────────────────────────────────────────
 [startup]
 profile = "katana"            # Default device profile
-page = "main"                 # Default page to load
+page = "default"              # Default page to load
 setlist = ""                  # Optional: auto-load a setlist
 query_device = true           # Query device state on startup (if supported)
 

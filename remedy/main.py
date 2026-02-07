@@ -6,6 +6,7 @@ Configuration-driven MIDI controller firmware for Paint Audio MIDI Captain.
 
 import time
 import gc
+import displayio
 
 from lib.config import Config, ConfigError
 from lib.hardware import Hardware
@@ -37,6 +38,12 @@ class MidiCaptainApp:
     def __init__(self):
         print(f"\n=== MIDICaptain Remedy v{self.VERSION} ===\n")
 
+        # Release any display/SPI resources from previous run.
+        # On RP2040 soft resets, SPI pin state persists (CP issue #4838).
+        # This must happen before ANY other initialization.
+        displayio.release_displays()
+        gc.collect()
+
         # State
         self._running = True
         self._current_page = None
@@ -61,7 +68,8 @@ class MidiCaptainApp:
         print("Initializing display...")
         self.display = DisplayManager()
         try:
-            self.display.init()
+            display_brightness = self.config.display_brightness / 100.0
+            self.display.init(brightness=display_brightness)
             print("  Display initialized")
         except Exception as e:
             print(f"  Display init failed: {e}")
@@ -424,8 +432,8 @@ def main():
         print("\nShutdown requested")
     except Exception as e:
         print(f"\nError: {e}")
-        import sys
-        sys.print_exception(e)
+        import traceback
+        traceback.print_exception(e)
     finally:
         if app:
             app.deinit()

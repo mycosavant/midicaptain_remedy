@@ -6,7 +6,7 @@ name = "Default"
 description = "Basic MIDI controller layout compatible with any device"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Top Row: Effect Toggles (A, B, C, D)
+# Bottom Row: Effect Toggles (A, B, C, D)
 # ─────────────────────────────────────────────────────────────────────────────
 
 [buttons.A]
