@@ -1,0 +1,35 @@
+# MIDICaptain Remedy - Example Setlist
+# A setlist is an ordered list of songs with optional page/preset overrides.
+# Navigate songs with up/down buttons when setlist mode is active.
+
+[setlist]
+name = "Friday Gig"
+page = "katana-live"
+
+[[songs]]
+name = "Intro Jam"
+on_enter = [
+    { type = "midi_pc", program = 1 },
+]
+notes = "Clean channel, light reverb"
+
+[[songs]]
+name = "Rock Song"
+on_enter = [
+    { type = "midi_pc", program = 3 },
+]
+notes = "Lead channel, boost ready"
+
+[[songs]]
+name = "Ballad"
+on_enter = [
+    { type = "midi_pc", program = 2 },
+]
+notes = "Crunch channel, delay+reverb"
+
+[[songs]]
+name = "Closer"
+on_enter = [
+    { type = "midi_pc", program = 4 },
+]
+notes = "Brown channel, all effects"

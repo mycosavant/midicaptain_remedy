@@ -1,0 +1,84 @@
+# MIDICaptain Remedy - DAW Control Page
+# Generic MIDI CC page for controlling DAW plugins, amp sims, etc.
+
+[page]
+name = "DAW Control"
+description = "Generic CC controller for DAW and plugin control"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top Row: Scene/Preset Selection (1, 2, 3, 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons."1"]
+label = "SCENE 1"
+color = "white"
+on_press = { type = "midi_pc", program = 0 }
+
+[buttons."2"]
+label = "SCENE 2"
+color = "white"
+on_press = { type = "midi_pc", program = 1 }
+
+[buttons."3"]
+label = "SCENE 3"
+color = "white"
+on_press = { type = "midi_pc", program = 2 }
+
+[buttons."4"]
+label = "SCENE 4"
+color = "white"
+on_press = { type = "midi_pc", program = 3 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bottom Row: Effect Toggles (A, B, C, D)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.A]
+label = "DRIVE"
+color = "green"
+on_press = { type = "midi_cc", cc = 25, value = "toggle" }
+
+[buttons.B]
+label = "CHORUS"
+color = "blue"
+on_press = { type = "midi_cc", cc = 26, value = "toggle" }
+
+[buttons.C]
+label = "DELAY"
+color = "amber"
+on_press = { type = "midi_cc", cc = 27, value = "toggle" }
+
+[buttons.D]
+label = "REVERB"
+color = "purple"
+on_press = { type = "midi_cc", cc = 28, value = "toggle" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Navigation
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.up]
+label = "PAGE+"
+color = "cyan"
+on_long_press = { type = "page_next" }
+
+[buttons.down]
+label = "PAGE-"
+color = "cyan"
+on_long_press = { type = "page_prev" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Encoder & Expression
+# ─────────────────────────────────────────────────────────────────────────────
+
+[encoder]
+bind = "midi_cc"
+fallback = { cc = 7 }
+
+[expression.pedal1]
+bind = "midi_cc"
+cc = 11
+
+[expression.pedal2]
+bind = "midi_cc"
+cc = 7

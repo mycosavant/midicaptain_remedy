@@ -1,0 +1,90 @@
+# MIDICaptain Remedy - Katana Live Performance Page
+# Optimized for BOSS Katana with GA-FC compatible CC mapping
+
+[page]
+name = "Katana Live"
+description = "BOSS Katana effect toggles and channel switching"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top Row: Channel Selection (1, 2, 3, 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons."1"]
+label = "CH1"
+color = "green"
+on_press = { type = "midi_pc", program = 1 }
+
+[buttons."2"]
+label = "CH2"
+color = "amber"
+on_press = { type = "midi_pc", program = 2 }
+
+[buttons."3"]
+label = "CH3"
+color = "red"
+on_press = { type = "midi_pc", program = 3 }
+
+[buttons."4"]
+label = "CH4"
+color = "purple"
+on_press = { type = "midi_pc", program = 4 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bottom Row: Effect Toggles (A, B, C, D) - GA-FC CC Numbers
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.A]
+label = "BOOST"
+color = "green"
+on_press = { type = "midi_cc", cc = 16, value = "toggle" }
+
+[buttons.B]
+label = "MOD"
+color = "blue"
+on_press = { type = "midi_cc", cc = 17, value = "toggle" }
+
+[buttons.C]
+label = "DELAY"
+color = "amber"
+on_press = { type = "midi_cc", cc = 19, value = "toggle" }
+
+[buttons.D]
+label = "REVERB"
+color = "purple"
+on_press = { type = "midi_cc", cc = 20, value = "toggle" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Navigation
+# ─────────────────────────────────────────────────────────────────────────────
+
+[buttons.up]
+label = "PAGE+"
+color = "cyan"
+on_press = { type = "midi_cc", cc = 80, value = "toggle" }
+on_long_press = { type = "page_next" }
+
+[buttons.down]
+label = "TUNER"
+color = "cyan"
+on_press = { type = "tuner_toggle" }
+on_long_press = { type = "page_prev" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Encoder - Volume via SysEx (falls back to CC7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[encoder]
+bind = "sysex:volume"
+fallback = { cc = 7 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Expression Pedals
+# ─────────────────────────────────────────────────────────────────────────────
+
+[expression.pedal1]
+bind = "sysex:wah_position"
+cc = 1
+
+[expression.pedal2]
+bind = "midi_cc"
+cc = 7
