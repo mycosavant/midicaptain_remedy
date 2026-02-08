@@ -34,6 +34,7 @@ There is no build system - CircuitPython firmware deploys via direct file copy:
 #    remedy/main.py    → /main.py
 #    remedy/lib/       → /lib/
 #    remedy/config/    → /config/
+#    remedy/fonts/     → /fonts/
 # 4. Disconnect USB, normal boot runs firmware
 ```
 
@@ -81,6 +82,7 @@ There is no build system - CircuitPython firmware deploys via direct file copy:
 | `midi.py` | USB+DIN MIDI, Roland SysEx with checksum, Katana helpers |
 | `display.py` | DisplayManager, ColorPalette, dirty-flag rendering pattern |
 | `tuner.py` | TunerState, TunerController, pitch detection via MIDI |
+| `menu.py` | On-device settings menu, expression pedal calibration (NVM) |
 
 ## Configuration System
 
@@ -92,8 +94,12 @@ remedy/config/
 ├── profiles/
 │   ├── katana.toml      # BOSS Katana SysEx (tiered: CC → SysEx → Gen3)
 │   └── generic_cc.toml  # Universal CC/PC for any MIDI device
-└── pages/
-    └── default.toml     # Button actions, encoder, expression pedals
+├── pages/
+│   ├── default.toml     # Basic MIDI CC/PC controller layout
+│   ├── katana-live.toml # Katana live performance (GA-FC CCs)
+│   └── daw-control.toml # Generic DAW controller
+└── setlists/
+    └── example.toml     # Example setlist with song navigation
 ```
 
 **Button config pattern:**
@@ -133,9 +139,35 @@ KATANA_MODEL_ID = [0x00, 0x00, 0x00, 0x33]
 - **Lazy color computation:** dim/dark variants cached on first use
 - **Display throttling:** Updates capped at ~30fps
 
+## Features
+
+### Page Navigation
+Pages are auto-discovered from `config/pages/*.toml`. Buttons with `page_next`/`page_prev` actions cycle through them. Toggle states are cleared on page change.
+
+### LED Toggle Feedback
+Buttons with `value = "toggle"` track on/off state. LEDs show full brightness when ON, dimmed (idle_brightness) when OFF. State syncs bidirectionally with incoming MIDI CC.
+
+### Setlist Mode
+Configure `setlist = "example"` in `global.toml` `[startup]`. Up/down buttons navigate songs (overrides normal page_next/page_prev). Each song can have `on_enter` MIDI actions. The display title updates to show the current song name.
+
+### Settings Menu
+Activated by encoder long-press. Navigate with encoder rotation, select with encoder press. Settings: MIDI Channel, Display Brightness, LED Brightness, Expression Pedal Calibration. Calibration uses a 3-step wizard (set min → set max → confirm) and persists to NVM.
+
+### Bidirectional Device Sync
+When `query_device = true` in `[startup]`, the firmware queries the connected device for current effect states on boot (via Roland SysEx RQ1). Incoming CC and SysEx responses update toggle LED states automatically.
+
+## NVM Layout (RP2040)
+Expression pedal calibration is stored in non-volatile memory since the filesystem is read-only (CP10 boot.py storage import bug):
+- Byte 0: Reserved (SPI reset guard)
+- Bytes 1-2: Pedal 1 min (16-bit big-endian)
+- Bytes 3-4: Pedal 1 max (16-bit big-endian)
+- Bytes 5-6: Pedal 2 min (16-bit big-endian)
+- Bytes 7-8: Pedal 2 max (16-bit big-endian)
+
 ## Important Directories
 
 - `remedy/` - New refactored firmware (primary development)
+- `remedy/fonts/` - PCF bitmap fonts (PTSans variants) for display
 - `HKAudio_firmware/` - Reference implementation (tuner ported from here)
 - `MIDICAPTAIN_OEM_BACKUP/` - Original Paint Audio firmware backup
 - `scripts/` - Individual hardware test scripts
