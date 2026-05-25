@@ -14,8 +14,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
+# OEM ships vendored Adafruit CP libs; available publicly, not project source
+/MIDICAPTAIN_OEM_BACKUP/lib/
 parts/
 sdist/
 var/
