@@ -1,0 +1,116 @@
+[globalsetup]
+ledbright = [30]
+screenbright = [80]
+dark_fonts = [off]
+wallpaper = [wp1]
+long_press_timing = [1]
+WIRELESS_2.4G = [on]
+WIRELESS_ID   = [8]
+WIRELESS_dB   = [6]
+
+
+[PAGE]
+# FL STUDIO transport + edit
+# FL Studio has no default CC->transport map -- you MUST MIDI-Learn each:
+#   1. In FL Studio: right-click the target button (Play/Stop/Rec/etc).
+#   2. Choose "Link to controller...".
+#   3. Press the footswitch -- FL learns the CC.
+# CCs 102-110 are in the MIDI "undefined" range so they won't collide with
+# track plugins. Use the same range only here -- REAPER page uses 111-119.
+page_name = [FLSO]
+
+exp1_CH = [1]
+exp1_CC = [11]
+
+exp2_CH = [1]
+exp2_CC = [7]
+
+encoder_CC = [7]
+encoder_NAME = [VOL]
+
+midithrough = [on]
+
+display_number_ABC = [123]
+group_number = [5]
+display_pc_offset = [1]
+display_bank_offset = [1]
+
+# --- Top row: PLAY, STOP, REC, METRONOME, NEXT PATTERN ----------------------
+
+[key0]
+# PLAY/PAUSE
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0x00ff00][0x00ff00][0x00ff00]
+short_dw1 = [1][CC][102][127]
+
+[key1]
+# STOP
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][103][127]
+
+[key2]
+# RECORD toggle
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][104][127]
+
+ledcolor2 = [0x220000][0x220000][0x220000]
+short_dw2 = [1][CC][104][0]
+
+[key3]
+# METRONOME toggle
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xffaa00][0xffaa00][0xffaa00]
+short_dw1 = [1][CC][105][127]
+
+ledcolor2 = [0x221500][0x221500][0x221500]
+short_dw2 = [1][CC][105][0]
+
+[key4]
+# PATTERN NEXT
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][CC][106][127]
+
+# --- Bottom row: SAVE, UNDO, REDO, TAP, PATTERN PREV ------------------------
+
+[key5]
+# SAVE PROJECT (Ctrl+S target)
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0x0080ff][0x0080ff][0x0080ff]
+short_dw1 = [1][CC][107][127]
+
+[key6]
+# UNDO
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffff00][0xffff00][0xffff00]
+short_dw1 = [1][CC][108][127]
+
+[key7]
+# REDO
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xaaff00][0xaaff00][0xaaff00]
+short_dw1 = [1][CC][109][127]
+
+[key8]
+# TAP TEMPO (CC 64 -- standard)
+keytimes = [1]
+ledmode = [tap]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][64][64]
+
+[key9]
+# PATTERN PREV
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][CC][110][127]

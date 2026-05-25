@@ -1,0 +1,8 @@
+{
+  "name": "midicaptain-presets",
+  "description": "Author MIDI Captain SuperMode and GeekMode preset files from plain-English descriptions. Includes CC reference tables for BOSS Katana, Neural DSP Archetype, Helix Native, FL Studio, and REAPER.",
+  "version": "0.1.0",
+  "author": {
+    "name": "onemind"
+  }
+}

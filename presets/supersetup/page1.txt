@@ -1,0 +1,118 @@
+[globalsetup]
+ledbright = [30]
+screenbright = [80]
+dark_fonts = [off]
+wallpaper = [wp1]
+long_press_timing = [1]
+WIRELESS_2.4G = [on]
+WIRELESS_ID   = [8]
+WIRELESS_dB   = [6]
+
+
+[PAGE]
+# NEURAL DSP ARCHETYPE
+# CC 100 is the Device Activator + chain selector (NDSP-wide convention):
+#   value 0 = bypass plugin, values 1-7 = chain 1-7
+# Other parameters: right-click in plugin -> Enable MIDI Learn, press footswitch.
+# Stomp slots below are pre-assigned to CC 102-104 -- learn them to whatever
+# you want (chain stomps, doubler, cab sim toggle, etc).
+page_name = [NDSP]
+
+exp1_CH = [1]
+exp1_CC = [11]
+
+exp2_CH = [1]
+exp2_CC = [7]
+
+encoder_CC = [7]
+encoder_NAME = [OUT]
+
+midithrough = [on]
+
+display_number_ABC = [abc4]
+group_number = [4]
+display_pc_offset = [1]
+display_bank_offset = [1]
+
+# --- Top row: chain selector (CC 100) ---------------------------------------
+
+[key0]
+# BYPASS -- CC100 val 0 disables the device
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x660000][0x660000][0x660000]
+short_dw1 = [1][CC][100][0]
+
+[key1]
+# CHAIN 1 -- clean
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x00ff00][0x00ff00][0x00ff00]
+short_dw1 = [1][CC][100][1]
+
+[key2]
+# CHAIN 2 -- crunch
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0xffaa00][0xffaa00][0xffaa00]
+short_dw1 = [1][CC][100][2]
+
+[key3]
+# CHAIN 3 -- lead
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][100][3]
+
+[key4]
+# BANK+ (preset bank navigation)
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][PC][auto][bank_inc]
+
+# --- Bottom row: 3 MIDI-Learn stomps + TAP + BANK- --------------------------
+
+[key5]
+# Stomp 1 -- CC 102 (learn me)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0x00ffff][0x00ffff][0x00ffff]
+short_dw1 = [1][CC][102][127]
+
+ledcolor2 = [0x002222][0x002222][0x002222]
+short_dw2 = [1][CC][102][0]
+
+[key6]
+# Stomp 2 -- CC 103 (learn me)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xff00ff][0xff00ff][0xff00ff]
+short_dw1 = [1][CC][103][127]
+
+ledcolor2 = [0x220022][0x220022][0x220022]
+short_dw2 = [1][CC][103][0]
+
+[key7]
+# Stomp 3 -- CC 104 (learn me)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xffff00][0xffff00][0xffff00]
+short_dw1 = [1][CC][104][127]
+
+ledcolor2 = [0x222200][0x222200][0x222200]
+short_dw2 = [1][CC][104][0]
+
+[key8]
+# TAP (learn to plugin tempo / delay if exposed)
+keytimes = [1]
+ledmode = [tap]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][64][64]
+
+[key9]
+# BANK-
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][PC][auto][bank_dec]
