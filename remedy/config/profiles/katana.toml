@@ -22,8 +22,8 @@ default_channel = 1
 
 # Expression CCs
 [midi.control_change.expression]
-1  = { name = "EXP Pedal", type = "continuous", min = 0, max = 127 }
-7  = { name = "Volume", type = "continuous", min = 0, max = 127 }
+1 = { name = "EXP Pedal", type = "continuous", min = 0, max = 127 }
+7 = { name = "Volume", type = "continuous", min = 0, max = 127 }
 11 = { name = "Expression", type = "continuous", min = 0, max = 127 }
 
 # SysEx core
@@ -41,7 +41,7 @@ identity_request = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7]
 
 [sysex.editor_mode]
 enter = { address = [0x7F, 0x00, 0x00, 0x01], data = [0x01] }
-exit  = { address = [0x7F, 0x00, 0x00, 0x01], data = [0x00] }
+exit = { address = [0x7F, 0x00, 0x00, 0x01], data = [0x00] }
 settle_time_ms = 100
 
 # Amp parameters
@@ -330,6 +330,8 @@ D = { action = "midi_cc", cc = 20, label = "REVERB" }
 "4" = { action = "midi_pc", program = 4, label = "CH4" }
 up = { action = "bank_up", label = "BANK+" }
 down = { action = "tuner", label = "TUNER" }
+# TODO Press and HOld actions vs "momentary"? E.g. hold "1" for 2 seconds to send a different program change.
+#  Currently need to map FX to A-E and CH1-4 + Panel Tone Setting
 
 [defaults.encoder]
 bind = "sysex:volume"
