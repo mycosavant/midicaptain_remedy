@@ -1,0 +1,5 @@
+# Cargo build artifacts
+target/
+
+# Cargo-generated lockfile patches (we DO commit Cargo.lock for the bin/lib)
+**/*.rs.bk

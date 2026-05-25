@@ -1,0 +1,29 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Dual-runner configuration.
+#
+# The MIDI Captain has no exposed debug header by default. While iterating
+# without a probe, the UF2 path lets you flash by holding BOOTSEL during
+# power-on (or 1200-baud-touching the CDC port — see bootsel_hammer.py and
+# the 1200-baud reset hook in examples/serial_echo.rs). The device mounts as
+# RPI-RP2; `elf2uf2-rs -d` converts the ELF to UF2 and drops it on that
+# drive, which auto-flashes and reboots.
+#
+# Once you have a probe-rs-compatible probe (Pi Debug Probe, picoprobe,
+# J-Link, etc.) wired to the SWD pads (see HARDWARE.md), uncomment the
+# probe-rs runner and you'll get full RTT logs and breakpoints.
+# ───────────────────────────────────────────────────────────────────────────
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "elf2uf2-rs -d"
+# runner = "probe-rs run --chip RP2040"
+
+# rustflags are intentionally absent here — the build.rs emits the linker
+# script flags via `cargo:rustc-link-arg-{bins,examples}=...` so they
+# follow the build artifact kind.
+
+[build]
+target = "thumbv6m-none-eabi"  # Cortex-M0 / M0+
+
+[env]
+# Default log level. Override on a single run with e.g.:
+#   DEFMT_LOG=trace cargo run --example blink
+DEFMT_LOG = "info"

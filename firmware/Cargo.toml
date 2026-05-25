@@ -1,0 +1,65 @@
+[package]
+name = "midicaptain-firmware"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Rust + Embassy firmware port for the Paint Audio MIDI Captain (RP2040)."
+
+# Library crate that exposes the typed pin map. The example binaries in
+# examples/ are the runnable artifacts during PoC stage; a top-level
+# application binary lands in a follow-up session.
+[lib]
+name = "midicaptain_firmware"
+
+# ─── Embassy / Cortex-M core ─────────────────────────────────────────────
+# Versions chosen to match the current embassy/main examples (May 2026):
+#   embassy-rp 0.10 → embassy-executor 0.10, embassy-time 0.5, embassy-sync 0.8,
+#                     embassy-usb 0.6, embassy-usb-driver 0.2.
+# Pinning the major.minor lets cargo pick the latest compatible patch.
+[dependencies]
+cortex-m       = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt    = "0.7"
+critical-section = "1.2"
+
+defmt          = "1.0"
+defmt-rtt      = "1.0"
+panic-probe    = { version = "1.0", features = ["print-defmt"] }
+
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time     = { version = "0.5",  features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-sync     = { version = "0.8",  features = ["defmt"] }
+embassy-futures  = "0.1"
+embassy-rp       = { version = "0.10", features = ["defmt", "time-driver", "critical-section-impl", "rp2040", "unstable-pac"] }
+embassy-usb      = { version = "0.6",  features = ["defmt"] }
+embassy-usb-driver = "0.2"
+
+embedded-io-async = { version = "0.7", features = ["defmt"] }
+smart-leds = "0.4"
+static_cell = "2"
+
+# Cortex-M0+ has no native CAS. `portable-atomic` polyfills it via
+# `critical-section`. Required because `static_cell` and several embassy
+# crates lean on AtomicBool::compare_exchange.
+portable-atomic = { version = "1", features = ["critical-section"] }
+
+# ─── Release profile ─────────────────────────────────────────────────────
+# LTO + opt-level=s keeps RP2040 flash usage low; debug=true ships symbols
+# to defmt but is stripped from the UF2/flash binary (it lives in the ELF
+# only, used by probe-rs/defmt for symbol resolution).
+[profile.release]
+codegen-units = 1
+debug         = true
+incremental   = false
+lto           = true
+opt-level     = "s"
+overflow-checks = false
+
+# dev profile: still small enough to fit, but keep panics catchable
+[profile.dev]
+codegen-units = 1
+debug         = true
+incremental   = false
+lto           = "thin"
+opt-level     = "s"
+overflow-checks = true
