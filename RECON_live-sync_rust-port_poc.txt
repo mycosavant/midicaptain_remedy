@@ -1,0 +1,262 @@
+I'll start by reading the key files to understand the current firmware shape and OEM baseline, then research the alternative stacks.
+
+Now I have the firmware context. Let me check the bootsel_hammer and run targeted web research on CP10 USB, Embassy, and TinyUSB.
+
+I have what I need — the firmware files, OEM baseline, bootsel_hammer context, and three research reports on CP10 internals, Embassy, and Pico SDK/TinyUSB/MicroPython. Writing the report now.
+
+---
+
+# MIDI Captain Live Config Sync — Recon Report
+
+**Author:** recon session • **Date:** 2026-05-25 • **Audience:** next firmware engineering session
+
+---
+
+## TL;DR
+
+1. **The "`import storage` claims SPI1 pins" note in [CLAUDE.md](CLAUDE.md) is likely a misdiagnosis.** No upstream CircuitPython issue matches that symptom. The real CP10 regression is [adafruit/circuitpython#10167](https://github.com/adafruit/circuitpython/issues/10167): `storage.remount('/', readonly=False)` raises `RuntimeError` if MSC is still visible to the host. That looks similar from the outside but is semantically different and changes the design space. **First action of the next session: bisect this on hardware before designing around it.**
+2. **PoC this week** is cheap: keep CircuitPython 10, add `usb_cdc.enable(console=True, data=True)` to [remedy/boot.py](remedy/boot.py), disable USB MSC, expose a small command server on `usb_cdc.data`, push presets from the webapp over Web Serial. Net firmware changes: ~250 LOC, two new files.
+3. **Long-term, migrate to Rust + Embassy.** Every capability you need is production-grade *except* USB MSC, and the absence of MSC is what makes live sync clean rather than ugly. CircuitPython 10 was the right bootstrap; it's the wrong destination given how tightly its USB MSC + filesystem semantics conflict with what you actually want.
+4. **Wire protocol:** USB CDC serial (Web Serial), COBS-framed binary with CRC-16, 5 commands. ~150 LOC of firmware-side code; webapp side is roughly the same.
+
+---
+
+## Section 1 — CircuitPython PoC Path
+
+### 1.1 OEM baseline (what the device shipped with)
+
+- [MIDICAPTAIN_OEM_BACKUP/boot_out.txt](MIDICAPTAIN_OEM_BACKUP/boot_out.txt:1): `Adafruit CircuitPython 7.3.1 on 2022-06-22`. Three+ years stale.
+- [MIDICAPTAIN_OEM_BACKUP/boot.py](MIDICAPTAIN_OEM_BACKUP/boot.py:1-23): Uses the classic CP7-era pattern:
+  - Switch1 (GP1) **not held** → `storage.disable_usb_drive()` + `storage.remount('/', readonly=False)` → device hides its filesystem from host, CP gets full write access.
+  - Switch1 **held at boot** → `storage.enable_usb_drive()` + `storage.remount('/', readonly=True)` → MIDICAPTAIN drive appears, CP is read-only.
+- [MIDICAPTAIN_OEM_BACKUP/code.py:59-69](MIDICAPTAIN_OEM_BACKUP/code.py:59) **proves runtime flash writes work** in CP7.3.1 (`with open('/res/firmwareid.dat', "r+") as fp4: ... fp4.write(line4)`). No SPI conflict because OEM ignores the display.
+- The OEM exposes **no USB CDC data channel** — only the implicit REPL console.
+
+### 1.2 What CP10 actually supports (corrected)
+
+**USB classes (composite):** CircuitPython 10 on RP2040 can run **USB-MIDI + USB-MSC + USB-CDC console + USB-CDC data simultaneously** — exactly fits the RP2040's 7 usable endpoint pairs (EP0 reserved). Single boot.py line:
+
+```python
+import usb_cdc
+usb_cdc.enable(console=True, data=True)
+```
+
+Sources: [usb_cdc docs](https://docs.circuitpython.org/en/latest/shared-bindings/usb_cdc/), [Adafruit "How Many USB Devices"](https://learn.adafruit.com/customizing-usb-devices-in-circuitpython/how-many-usb-devices-can-i-have).
+
+**The SPI1-pin claim:** The CP `storage` module touches only the QSPI flash (dedicated pads, not GP14/15). No upstream issue, PR, or `ports/raspberrypi` source matches the symptom in [CLAUDE.md](CLAUDE.md). The actual CP10 change in this area is [issue #10167](https://github.com/adafruit/circuitpython/issues/10167) / PR #10122: post-9.2.4, `storage.remount('/', readonly=False)` raises `RuntimeError: Cannot remount '/' when visible via USB` if MSC is enabled. **That is almost certainly what got observed and misnamed.** Bisect on hardware before relying on this finding — try `import storage` alone in boot.py against the current firmware and see what actually breaks.
+
+**Concurrent FAT writes:** CP10 enforces "host MSC OR CP writes, not both" via remount semantics. There is one escape hatch, `storage.remount('/', readonly=False, disable_concurrent_write_protection=True)`, that the docs explicitly mark as corruption-risky. **Do not use it.**
+
+### 1.3 Answers to your Section 1 questions
+
+| Q | Answer |
+|---|---|
+| **1.1 What USB classes does OEM expose?** | MIDI + MSC (gated by Switch1 at boot). No CDC data channel. REPL console only. |
+| **1.2 Can CP10 expose MIDI + MSC + CDC simultaneously?** | **Yes.** `usb_cdc.enable(console=True, data=True)` in boot.py. Fits endpoint budget exactly. |
+| **1.3 Documented workaround for SPI1-pin issue?** | **No such bug found.** The real CP10 change is `remount` lockdown ([#10167](https://github.com/adafruit/circuitpython/issues/10167)). Re-verify on hardware. |
+| **1.4 If we drop MSC, can CP freely write to flash?** | **Yes.** `storage.disable_usb_drive()` in boot.py, then CP has automatic R/W on `/` (default since CP 9.0). Cost: no drag-and-drop deploys; updates must flow over CDC or via a UF2 / BOOTSEL reboot for emergencies. The existing [scripts/bootsel_hammer.py](scripts/bootsel_hammer.py:1-99) (1200-baud touch from commit `97adc2d`) becomes the escape hatch when sync is broken. |
+| **1.5 Smallest viable PoC** | See §1.4 below. |
+
+### 1.4 Smallest viable PoC (CircuitPython path)
+
+**Recommended approach:** Drop USB MSC entirely. Make CDC the only deploy path. This is the cleanest possible firmware change and matches what the long-term Embassy port would look like anyway.
+
+Changes required:
+
+1. **[remedy/boot.py](remedy/boot.py)** (~6 lines):
+   ```python
+   import storage
+   import usb_cdc
+   storage.disable_usb_drive()
+   storage.remount('/', readonly=False)
+   usb_cdc.enable(console=True, data=True)
+   ```
+2. **`remedy/lib/sync.py`** (new, ~150 LOC): COBS-framed request/response server reading from `usb_cdc.data`. Implements `WRITE`, `READ`, `LIST`, `DELETE`, `RELOAD` commands (see §3).
+3. **`remedy/main.py`** (~10 LOC added): Instantiate `SyncServer`, call `sync.poll()` once per main-loop iteration after `self.midi.receive()`. Non-blocking — CDC `read()` with `timeout=0`.
+4. **`remedy/lib/config.py`** (~5 LOC added): `Config.reload()` method that re-runs the discover/load flow without re-init'ing hardware. Already mostly factored — the page-change path already does most of this.
+5. **Webapp side**: Web Serial client (~100 LOC TS). Filter on RP2040 VID `0x2E8A`. Implement same COBS+CRC framing.
+
+**Migration path for existing users:** the 1200-baud BOOTSEL touch ([scripts/bootsel_hammer.py](scripts/bootsel_hammer.py)) still works as the recovery channel — it talks to *any* CDC port and resets to UF2 bootloader. So users who brick their CDC server can still re-flash.
+
+**Caveat to verify on hardware first:** Does just adding `import storage` + `disable_usb_drive` + `remount` actually break the ST7789? The CLAUDE.md note says yes; the upstream evidence says no; the [main.py:43-46](remedy/main.py:43) comment (`On RP2040 soft resets, SPI pin state persists (CP issue #4838)`) suggests the real bug may be soft-reset-related, not import-related. **15 minutes with a serial console and a hardware unit settles this question.**
+
+---
+
+## Section 2 — Rewrite Candidates
+
+| Stack | USB-MIDI | USB-CDC | USB-MSC | ST7789 | WS2812 | Flash R/W | Verdict |
+|-------|----------|---------|---------|--------|--------|-----------|---------|
+| **Rust + Embassy** | Production ([embassy_usb::class::midi](https://github.com/embassy-rs/embassy/tree/main/embassy-usb/src/class/midi)) | Production | **Missing** | Production ([mipidsi 0.9](https://github.com/almindor/mipidsi)) | Production (PIO+DMA built into embassy-rp) | Production ([embassy-rp Flash](https://docs.embassy.dev/embassy-rp/) + [sequential-storage](https://crates.io/crates/sequential-storage)) | **Recommended** |
+| **C + Pico SDK + TinyUSB** | Production | Production | Production | Production ([pico-examples](https://github.com/raspberrypi/pico-examples)) | Production | Usable ([pico-littlefs](https://github.com/lurk101/pico-littlefs)) | Viable, ~500-1000 LOC USB boilerplate, MSC+runtime-write conflict unsolved |
+| **MicroPython rp2** | Usable (1.23+ `machine.USBDevice`, [micropython-lib/usb-device-midi](https://github.com/micropython/micropython-lib)) | Stock REPL only; second CDC requires custom build | Off by default in stock | Production ([russhughes/st7789_mpy](https://github.com/russhughes/st7789_mpy)) | Production (stock `neopixel` module) | Yes (no MSC by default → no conflict) | Possible but USB stack is the youngest of the three |
+| **Zephyr** | — | — | — | — | — | — | Too heavy for this scope; skipped |
+| **bare-metal Pico SDK** | Same as C+TinyUSB above | — | — | — | — | — | Same as C+TinyUSB |
+
+### 2.1 Rust + Embassy — details
+
+**Why it wins:** Every capability is production-grade except USB MSC, and the absence of MSC is precisely the property you want for live sync. No FAT corruption problem to worry about. The `embassy_rp::flash::Flash` API + `sequential-storage` gives you a KV store on QSPI flash that handles the XIP-disable / dual-core-pause dance correctly. Config TOML and NVM calibration both live in the KV store; no filesystem needed.
+
+**Prior art (closest match):** [luryus/RP-FC](https://github.com/luryus/rp-fc) — a Boss Katana GA-FC replacement on RP2040 in Rust (uses rp-hal, not Embassy, but proves the Katana TRS-MIDI + footswitch concept). [SupImDos/embassy-rp-skeleton](https://github.com/SupImDos/embassy-rp-skeleton) for project bootstrap. No published Embassy project combines footswitches + ST7789 + WS2812 + USB-MIDI; you'd be assembling well-supported parts.
+
+**Ergonomics:**
+- Compile: ~60-120 s cold, 2-8 s incremental.
+- Flash: `cargo run` with `elf2uf2-rs -d` runner → BOOTSEL → UF2 copy → reset, no probe required. Add a $15 Pi Debug Probe + `probe-rs run` for RTT logs.
+- Binary: 180-350 KB stripped/LTO with full stack + mipidsi + classes + fonts.
+- Memory: 264 KB RAM is comfortable. A full 240×240×16bpp framebuffer is 115 KB — fits but use partial-window writes (your current dirty-flag pattern ports directly).
+
+**SPI1-pin issue:** Doesn't exist in this stack. You wire pins explicitly in the peripheral builder.
+
+### 2.2 C + Pico SDK + TinyUSB — details
+
+**When to pick this:** If you need USB-MSC and live sync. TinyUSB ships MSC + MIDI + CDC classes that compose into one device. But there is **no stock example** combining all three — `tinyusb/examples/device/` has `cdc_msc` and `midi_test` separately; you assemble the descriptor by hand. Endpoint count fits exactly (MIDI 2 + CDC 3 + MSC 2 = 7).
+
+**Gotchas to budget for** ([TinyUSB #2158](https://github.com/hathach/tinyusb/issues/2158), [discussion #2162](https://github.com/hathach/tinyusb/discussions/2162)):
+- IAD required for CDC: device descriptor must be `bDeviceClass=0xEF, bSubClass=0x02, bProtocol=0x01`.
+- MIDI + CDC endpoint number conflicts if not assigned manually.
+- ~500-1000 LOC of USB boilerplate before app code.
+
+**MSC + simultaneous device R/W:** Unsolved cleanly on any platform — host and device both writing to FAT corrupts it. CircuitPython's `disable_concurrent_write_protection` flag exists precisely because the problem is hard. If you go this route, your options are (a) carve flash into separate FAT (MSC-only) + LittleFS (device-only) partitions, (b) use a sync protocol that puts MSC into "host eject" state during writes (clunky UX), or (c) just don't expose MSC.
+
+**Verdict:** Maximum control, best peripheral performance, but you'll pay for it in boilerplate and inherit the same MSC concurrency problem CircuitPython has.
+
+### 2.3 MicroPython — details
+
+The `storage`-touches-SPI1 concern doesn't exist (MicroPython rp2's VFS uses dedicated QSPI pins). Stock builds **don't expose USB MSC at all** — only REPL CDC; files are accessed via `mpremote fs`. So the "MSC vs runtime writes" question is moot by default.
+
+**Downsides for your use case:**
+- USB-MIDI requires MicroPython 1.23+ `machine.USBDevice` + `micropython-lib/usb-device-midi` (June 2024) — functional but the newest of the three Python USB-MIDI stacks. Latency runs through the MicroPython scheduler.
+- Adding a second CDC for data sync requires either a custom firmware rebuild or runtime-defining via `machine.USBDevice`, which displaces the REPL.
+- No drop-in equivalent to your current `lib/display.py` ecosystem; closest is `russhughes/st7789_mpy` (C-extension, fast).
+
+**Verdict:** Side-grade from CircuitPython, not a clear win. Skip unless you hit a CP-specific blocker that MicroPython resolves.
+
+### 2.4 Anything else
+
+- **Zephyr:** Capable but heavy for this scope. RP2040 support is alpha-ish. Skip.
+- **ChibiOS:** No real RP2040 community. Skip.
+- **bare-metal Pico SDK (no TinyUSB):** Writing your own USB stack is a project, not a feature. Skip.
+
+---
+
+## Section 3 — Webapp ↔ Device Wire Protocol
+
+### 3.1 Transport choice
+
+| Transport | Pros | Cons | Pick? |
+|-----------|------|------|-------|
+| **USB CDC serial (Web Serial)** | Webapp-friendly (Chrome/Edge Web Serial API), bi-directional, no MIDI baggage, ~12 Mbit/s effective on RP2040 | Chrome/Edge only (no Safari/Firefox without flag) | **Yes** |
+| USB MIDI SysEx | Already wired; works everywhere with Web MIDI | 7-bit data (encoding overhead), small message ceiling (~2-4 KB practical), interleaves with musical traffic | No |
+| WebUSB | Bypasses driver issues | Requires custom descriptor + landing page binding; loses easy CLI/terminal debugging | No |
+
+Web MIDI is universal but the 7-bit encoding and "user is playing live" concern make it the wrong channel for multi-KB config transfers. Web Serial is the right call; Safari users use Chrome for the editor.
+
+### 3.2 Framing
+
+**COBS** (Consistent Overhead Byte Stuffing) with `0x00` delimiters + **CRC-16/CCITT**:
+
+```
+[ COBS(payload || CRC16(payload)) ][ 0x00 ]
+```
+
+- COBS guarantees no `0x00` in payload, so receiver re-syncs trivially after junk/disconnect.
+- CRC-16 catches transmission errors (CDC is reliable but USB suspend/wake corruption happens).
+- Overhead: 1 byte per ~254 bytes of payload + 2 bytes CRC + 1 delimiter. ~1% overhead for 4 KB chunks.
+
+**Payload structure (binary, big-endian):**
+
+```
+u8  cmd
+u8  seq            # echoed in response, for matching
+u16 payload_len
+u8  payload[payload_len]
+```
+
+Chunk multi-KB writes at 1024-byte payloads (well under RP2040 RAM pressure and well above CDC packet size).
+
+### 3.3 Command set
+
+| Cmd | Code | Request payload | Response payload | Notes |
+|-----|------|-----------------|------------------|-------|
+| `HELLO` | 0x01 | `u8 proto_version` | `u8 proto_version, str firmware_version, str device_id` | Handshake; webapp must call first |
+| `LIST` | 0x02 | `str path_prefix` | `[str path, u32 size]...` | Enumerate `/config/**` |
+| `READ` | 0x03 | `str path, u32 offset, u16 len` | `u8 chunk[len]` | Streamed read |
+| `WRITE_BEGIN` | 0x04 | `str path, u32 total_len, u32 crc32` | `u8 ok` | Locks the file for write; allocates temp `path.tmp` |
+| `WRITE_CHUNK` | 0x05 | `u32 offset, u8 chunk[]` | `u8 ok` | Up to 1 KB per chunk |
+| `WRITE_COMMIT` | 0x06 | `str path` | `u8 ok, u32 crc32_actual` | Verifies CRC, atomically renames `path.tmp` → `path` |
+| `DELETE` | 0x07 | `str path` | `u8 ok` | |
+| `RELOAD` | 0x08 | (none) | `u8 ok` | Re-run config discover + page load without restart |
+| `REBOOT` | 0x09 | (none) | (none — connection drops) | For deploying changed `code.py` / `lib/` |
+| `ERROR` | 0xFF | — | `u8 code, str message` | All error responses |
+
+The two-phase `WRITE_BEGIN` / `WRITE_CHUNK` / `WRITE_COMMIT` pattern is essential — it gives you atomic file replacement (write to `.tmp`, rename on success), so an interrupted sync never half-writes a preset that then crashes the device on boot.
+
+### 3.4 Concurrency
+
+**Single-threaded main loop, no preemption.** The MIDI receive path ([remedy/main.py:742](remedy/main.py:742)) and sync poll run sequentially. A typical sync turn:
+
+1. Main loop calls `sync.poll()` → reads up to N bytes from `usb_cdc.data`.
+2. If a full frame is assembled, `handle_frame()` dispatches.
+3. `WRITE_CHUNK` writes ~1 KB to flash. RP2040 flash erase is the killer — a 4 KB sector erase blocks ~100 ms with interrupts disabled. **Acceptable** for occasional sync but will glitch MIDI thru during the erase.
+
+**Buffering for MIDI continuity:**
+- Inbound MIDI is in TinyUSB's USB ring buffer — won't drop during the erase, just gets a brief stall.
+- Outbound MIDI from button presses queues in `MidiInterface`; flush after the chunk completes.
+- For UX, gate sync to "device is idle" (no buttons held, no encoder rotation in last 250 ms). The webapp shows "device busy" if the device returns a `BUSY` error code.
+
+**Power-loss safety:** Atomic rename via `.tmp` covers most. For the worst case (power loss during the rename itself), fall back to: if `presets/foo.toml.tmp` exists at boot but `presets/foo.toml` doesn't, the load path treats `.tmp` as the source.
+
+---
+
+## Section 4 — Recommendation
+
+### 4.1 PoC path (this week)
+
+**Ship a CircuitPython 10 PoC on the existing `remedy/` codebase.** No rewrite, no library churn.
+
+Sequence:
+1. **Hour 1: Verify the SPI1 claim on hardware.** Modify boot.py to do nothing but `import storage`. Boot, observe whether the ST7789 still inits. If it does (likely), CLAUDE.md's note is wrong and the design space opens up. If it doesn't, dig into why — it may be the `displayio.release_displays()` / soft-reset interaction ([CP issue #4838](https://github.com/adafruit/circuitpython/issues/4838) referenced at [remedy/main.py:43-46](remedy/main.py:43)).
+2. **Day 1-2: boot.py + sync server.** Per §1.4 — disable MSC, enable CDC data, write `lib/sync.py`.
+3. **Day 2-3: webapp Web Serial client.** Implement the COBS+CRC framing and the WRITE/RELOAD flow. Target Chrome only for PoC.
+4. **Day 4: end-to-end test.** Author preset in webapp → push over CDC → device reloads in <500 ms with no boot dance.
+
+Estimated effort: 2-3 focused days.
+
+### 4.2 Long-term path (this quarter)
+
+**Migrate to Rust + Embassy.** Reasoning:
+
+- The CircuitPython 10 USB-MSC + runtime-write conflict is structural, not a bug. As you add more features (per-page presets, downloadable setlists, future features), the "host vs device owns the filesystem" friction will keep biting.
+- Every capability you need has a production-grade Embassy crate today. The only "missing" piece is USB-MSC, which is what causes the friction in the first place — its absence is a feature.
+- You get deterministic async scheduling, no GC pauses, compile-time correctness across the event/action dispatch, and headroom for higher-fps display updates.
+- Rough migration sequence (suggest one peripheral driver at a time, not big-bang):
+  1. **Bootstrap project skeleton** from `embassy-rp-skeleton`. Get LED blink + serial logging working.
+  2. **Port pins.py** to a `pins.rs` module with `embassy-rp` type-state pin handles.
+  3. **Port hardware.py** (switches + encoder first; LEDs next; expression pedals last). Each peripheral is an Embassy task communicating via channels.
+  4. **Port midi.py** (USB MIDI + UART MIDI). USB MIDI via `embassy_usb::class::midi`; UART via `embassy_rp::uart` at 31250 baud.
+  5. **Port display.py** to mipidsi + embedded-graphics. Reuse the dirty-rect pattern.
+  6. **Port config + events** to Rust. Keep the TOML format; use the [`toml`](https://crates.io/crates/toml) crate. Store presets in `sequential-storage`.
+  7. **Port sync protocol verbatim** — by now the wire format from §3 is settled on the CP PoC, so the Rust impl just re-implements the same state machine.
+
+Estimated effort: 3-4 weeks of focused work for feature parity, assuming the wire protocol is already proven on the CP PoC.
+
+### 4.3 Risks and unknowns
+
+| Risk | Mitigation |
+|------|------------|
+| **The "SPI1 claim" really is a bug we don't understand.** Could derail the PoC. | 15-minute hardware bisect, day 1. If it's real, file an upstream issue with a minimal repro before working around it. |
+| **CDC enumeration is flaky in CP10 on RP2040.** ([bootsel_hammer.py:1-19](scripts/bootsel_hammer.py:1) was written precisely because of this.) | Use the existing 1200-baud touch as the recovery channel. Document it in the webapp UI. |
+| **Flash erase latency glitches MIDI mid-performance.** | Gate sync to idle periods (no button held in last 250 ms). Webapp surfaces `BUSY` errors clearly. |
+| **Atomic-rename semantics on CP's VFS.** Not all CP filesystems implement `os.rename` atomically. | Verify with a test: write a large `.tmp`, kill power mid-rename, check FS state on reboot. If non-atomic, fall back to a manifest file. |
+| **Embassy USB MIDI is "thinner" than `usbd-midi`.** You compose SysEx packets manually. | The existing CP `midi.py` already does this; the patterns port directly. Not a real risk, just a heads-up. |
+| **Web Serial is Chrome/Edge only.** | Document. The webapp can fall back to the old "manual file copy" workflow for Safari/Firefox users until WebUSB or Web Serial lands there. |
+
+---
+
+## Appendix A — Files inspected this session
+
+- [CLAUDE.md](CLAUDE.md) — project context
+- [remedy/boot.py](remedy/boot.py) — current 10-line no-op
+- [remedy/code.py](remedy/code.py), [remedy/main.py](remedy/main.py) — current firmware entry
+- [MIDICAPTAIN_OEM_BACKUP/boot.py](MIDICAPTAIN_OEM_BACKUP/boot.py), [MIDICAPTAIN_OEM_BACKUP/boot_out.txt](MIDICAPTAIN_OEM_BACKUP/boot_out.txt), [MIDICAPTAIN_OEM_BACKUP/code.py](MIDICAPTAIN_OEM_BACKUP/code.py) — OEM baseline
+- [scripts/bootsel_hammer.py](scripts/bootsel_hammer.py) — recovery channel (1200-baud touch)
+- `remedy/lib/*.py` — **not in this worktree** (only `boot.py`, `code.py`, `main.py`, `config/`, `fonts/`, `wokwi_test.py` exist). Likely on a feature branch. Next session: confirm whether `lib/` is unstaged, on the PR branch, or whether `main.py`'s imports are dead.
