@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MIDI Captain Preset Builder</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">[MC]</span>
+    <span class="brand-name" data-i18n="brand">MIDI&nbsp;CAPTAIN&nbsp;/&nbsp;PRESET&nbsp;BUILDER</span>
+  </div>
+  <div class="top-actions">
+    <button type="button" id="undo-btn" class="ghost-btn icon-btn" title="Undo (Ctrl+Z)" disabled>↶</button>
+    <button type="button" id="redo-btn" class="ghost-btn icon-btn" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
+    <select id="lang-select" class="lang-select" title="Language" aria-label="Language">
+      <option value="en">EN</option>
+      <option value="zh">中</option>
+      <option value="fr">FR</option>
+      <option value="es">ES</option>
+      <option value="pt">PT</option>
+    </select>
+    <select id="midi-output" class="midi-select" title="MIDI output for live preview" aria-label="MIDI output">
+      <option value="">MIDI: —</option>
+    </select>
+    <select id="device-select" class="device-select" title="MIDI Captain hardware variant">
+      <option value="std">CAPTAIN STD · 10</option>
+      <option value="goldblue">CAPTAIN BLUE/GOLD · 10</option>
+      <option value="mini">CAPTAIN MINI · 6</option>
+      <option value="nano">CAPTAIN NANO · 4</option>
+    </select>
+    <label for="import-input" class="ghost-btn" data-i18n="import" title="Import existing page*.txt / .dat files">IMPORT</label>
+    <input id="import-input" type="file" multiple hidden accept=".txt,.dat">
+    <div class="mode-switch" role="tablist" aria-label="Firmware mode">
+      <button type="button" class="mode-btn is-active" data-mode="super" role="tab" aria-selected="true">SUPERMODE</button>
+      <button type="button" class="mode-btn" data-mode="geek" role="tab" aria-selected="false">GEEKMODE</button>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- Page strip -->
+  <section class="pages-panel">
+    <div class="panel-head">
+      <h2 data-i18n="pages">PAGES</h2>
+      <div class="pages-actions">
+        <button type="button" id="page-add" class="ghost-btn" data-i18n="new" title="Add page">+ NEW</button>
+        <button type="button" id="page-dup" class="ghost-btn" data-i18n="dup" title="Duplicate current page">DUP</button>
+        <button type="button" id="page-del" class="ghost-btn danger" data-i18n="del" title="Delete current page">DEL</button>
+      </div>
+    </div>
+    <ol id="page-list" class="page-list" role="tablist" aria-label="Pages"></ol>
+  </section>
+
+  <!-- Editor -->
+  <section class="editor-panel">
+
+    <div class="page-meta">
+      <h2 class="meta-title" data-i18n="page_config">PAGE&nbsp;CONFIG</h2>
+      <div class="grid-2">
+        <label><span data-i18n="name">NAME</span> <span class="hint" data-i18n="name_hint">≤4 char</span>
+          <input id="meta-name" type="text" maxlength="4" spellcheck="false">
+        </label>
+        <label><span data-i18n="enc_cc">ENCODER&nbsp;CC</span>
+          <input id="meta-enc-cc" type="number" min="0" max="127" step="1">
+        </label>
+        <label><span data-i18n="enc_label">ENCODER&nbsp;LABEL</span>
+          <input id="meta-enc-name" type="text" maxlength="4" spellcheck="false">
+        </label>
+        <label><span data-i18n="midi_thru">MIDI&nbsp;THROUGH</span>
+          <select id="meta-thru">
+            <option value="on">ON</option>
+            <option value="off">OFF</option>
+          </select>
+        </label>
+        <label><span data-i18n="exp1">EXP1&nbsp;CH/CC</span>
+          <span class="pair">
+            <input id="meta-exp1-ch" type="number" min="1" max="16" step="1">
+            <input id="meta-exp1-cc" type="number" min="0" max="127" step="1">
+          </span>
+        </label>
+        <label><span data-i18n="exp2">EXP2&nbsp;CH/CC</span>
+          <span class="pair">
+            <input id="meta-exp2-ch" type="number" min="1" max="16" step="1">
+            <input id="meta-exp2-cc" type="number" min="0" max="127" step="1">
+          </span>
+        </label>
+        <label><span data-i18n="display_mode">DISPLAY&nbsp;MODE</span>
+          <select id="meta-display-abc">
+            <option value="123">123</option>
+            <option value="abc3">abc3</option>
+            <option value="abc4">abc4</option>
+            <option value="abc5">abc5</option>
+            <option value="abc8">abc8</option>
+          </select>
+        </label>
+        <label><span data-i18n="group_number">GROUP&nbsp;NUMBER</span>
+          <select id="meta-group">
+            <option>3</option><option>4</option><option>5</option><option>8</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="board">
+      <h2 class="meta-title"><span data-i18n="button_grid">BUTTON&nbsp;GRID</span>&nbsp;<span class="hint" data-i18n="click_to_edit">click&nbsp;to&nbsp;edit</span></h2>
+      <div class="board-stage">
+        <svg id="board-svg" class="board-svg" viewBox="0 0 760 360" role="grid" aria-label="MIDI Captain footprint" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+    </div>
+
+    <div class="key-edit">
+      <div class="panel-head">
+        <h2 id="key-edit-title">KEY&nbsp;0</h2>
+        <span class="hint" id="key-edit-hint">Top-left switch</span>
+      </div>
+
+      <div class="grid-2">
+        <label><span data-i18n="label">LABEL</span> <span class="hint" data-i18n="label_hint">≤4 char, SuperMode only</span>
+          <input id="key-label" type="text" maxlength="4" spellcheck="false">
+        </label>
+        <label class="color-label"><span data-i18n="led_color">LED&nbsp;COLOR</span> <span class="hint" id="key-color-hint">state 1</span>
+          <span class="pair color-pair">
+            <input id="key-color" type="color" value="#00ff00">
+            <input id="key-palette" type="number" min="0" max="21" step="1" title="GeekMode palette index">
+          </span>
+        </label>
+        <label><span data-i18n="led_mode">LED&nbsp;MODE</span>
+          <select id="key-ledmode">
+            <option value="normal">normal</option>
+            <option value="select">select (radio)</option>
+            <option value="tap">tap (blink)</option>
+          </select>
+        </label>
+        <label><span data-i18n="keytimes">KEYTIMES</span> <span class="hint" data-i18n="keytimes_hint">tap states</span>
+          <select id="key-keytimes">
+            <option>1</option><option>2</option><option>3</option>
+            <option>4</option><option>5</option><option>6</option>
+            <option>7</option><option>8</option><option>9</option><option>10</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="key-test-row">
+        <button type="button" id="test-key-btn" class="ghost-btn primary small" title="Send this key's MIDI to the selected output">▶ TEST KEY</button>
+        <span id="midi-status" class="midi-status">no MIDI output selected</span>
+      </div>
+
+      <div id="state-tabs" class="state-tabs super-only" hidden role="tablist" aria-label="Tap state"></div>
+
+      <div class="action-block">
+        <div class="action-block-head">
+          <h3 data-i18n="on_press">ON&nbsp;PRESS</h3>
+          <button type="button" class="ghost-btn small" data-i18n="add" data-add-action="press">+ ADD</button>
+        </div>
+        <ol id="press-list" class="action-list"></ol>
+      </div>
+
+      <div class="action-block">
+        <div class="action-block-head">
+          <h3 data-i18n="on_release">ON&nbsp;RELEASE</h3>
+          <button type="button" class="ghost-btn small" data-i18n="add" data-add-action="release">+ ADD</button>
+        </div>
+        <ol id="release-list" class="action-list"></ol>
+      </div>
+
+      <div class="action-block super-only" id="long-block">
+        <div class="action-block-head">
+          <h3 data-i18n="on_long">ON&nbsp;LONG&nbsp;PRESS</h3>
+          <button type="button" class="ghost-btn small" data-i18n="set" data-add-action="long">+ SET</button>
+        </div>
+        <ol id="long-list" class="action-list"></ol>
+      </div>
+
+      <div class="action-block super-only" id="long-release-block">
+        <div class="action-block-head">
+          <h3 data-i18n="on_long_rel">ON&nbsp;LONG&nbsp;RELEASE</h3>
+          <button type="button" class="ghost-btn small" data-i18n="set" data-add-action="long_release">+ SET</button>
+        </div>
+        <ol id="long_release-list" class="action-list"></ol>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- Preview + references stacked in right column -->
+  <aside class="right-column">
+
+  <section class="preview-panel">
+    <div class="panel-head">
+      <h2 id="preview-title">PREVIEW&nbsp;/&nbsp;page0.txt</h2>
+      <div class="preview-actions">
+        <button type="button" id="copy-btn" class="ghost-btn" data-i18n="copy">COPY</button>
+        <button type="button" id="dl-btn" class="ghost-btn primary" data-i18n="download">DOWNLOAD</button>
+        <button type="button" id="dl-all-btn" class="ghost-btn" data-i18n="dl_all">DL&nbsp;ALL</button>
+      </div>
+    </div>
+    <pre id="preview" class="preview"></pre>
+    <div id="copy-toast" class="toast">copied</div>
+  </section>
+
+  <section class="refs-panel">
+    <h2 data-i18n="reference">REFERENCE</h2>
+    <details open>
+      <summary>BOSS Katana (GA-FC)</summary>
+      <table>
+        <tr><th>CC</th><th>Function</th></tr>
+        <tr><td>1</td><td>EXP / Wah</td></tr>
+        <tr><td>7</td><td>Volume</td></tr>
+        <tr><td>11</td><td>Expression</td></tr>
+        <tr><td>16</td><td>Booster</td></tr>
+        <tr><td>17</td><td>Mod</td></tr>
+        <tr><td>18</td><td>FX</td></tr>
+        <tr><td>19</td><td>Delay</td></tr>
+        <tr><td>20</td><td>Reverb</td></tr>
+        <tr><td>21</td><td>FX Loop</td></tr>
+        <tr><td>64</td><td>Tap tempo (val&nbsp;64)</td></tr>
+        <tr><td>80/81</td><td>GA-FC CTL1/2</td></tr>
+      </table>
+      <p class="ref-note">PC 0-3 = CH1-CH4. SysEx for deeper params.</p>
+    </details>
+    <details>
+      <summary>Line 6 Helix Native</summary>
+      <table>
+        <tr><th>CC</th><th>Function</th></tr>
+        <tr><td>49-53</td><td>FS1-FS5</td></tr>
+        <tr><td>54-58</td><td>FS7-FS11</td></tr>
+        <tr><td>60</td><td>Loop rec/ovd (0-63 ovd, 64+ rec)</td></tr>
+        <tr><td>61</td><td>Loop play/stop</td></tr>
+        <tr><td>62</td><td>Loop 1-shot</td></tr>
+        <tr><td>63</td><td>Loop undo</td></tr>
+        <tr><td>64</td><td>Tap tempo</td></tr>
+        <tr><td>65</td><td>Loop fwd/rev</td></tr>
+        <tr><td>66</td><td>Loop full/half</td></tr>
+        <tr><td>68</td><td>Tuner</td></tr>
+        <tr><td>69</td><td>Snapshot (val 0-7)</td></tr>
+      </table>
+    </details>
+    <details>
+      <summary>Neural DSP Archetype</summary>
+      <table>
+        <tr><th>CC</th><th>Function</th></tr>
+        <tr><td>100</td><td>Device + chain (val 0 bypass, 1-7 chain)</td></tr>
+      </table>
+      <p class="ref-note">Everything else: right-click in plugin → Enable MIDI Learn → press footswitch.</p>
+    </details>
+    <details>
+      <summary>FL Studio (learn block)</summary>
+      <p class="ref-note">No factory CC map. Suggested learn block CC 102-110: play, stop, rec, metronome, pat+, save, undo, redo, pat-.</p>
+    </details>
+    <details>
+      <summary>REAPER (learn block)</summary>
+      <p class="ref-note">No factory CC map. Suggested learn block CC 111-119: play, stop, rec, loop, mrk+, save, undo, redo, mrk-.</p>
+    </details>
+    <details>
+      <summary>Macro launcher tips</summary>
+      <p class="ref-note">Use Note On + Note Off pairs on channel 14-16, outside the playing range (notes 0-23). Stream Deck / Keyboard Maestro / Hammerspoon / AHK / BetterTouchTool catch them reliably.</p>
+    </details>
+
+    <h3 class="refs-subhead" data-i18n="sources">SOURCES</h3>
+    <ul class="sources">
+      <li><a href="https://helixhelp.com/tips-and-guides/universal/midi" target="_blank" rel="noopener">Helix MIDI implementation chart</a></li>
+      <li><a href="https://neuraldsp.com/getting-started/controlling-plugins-with-midi" target="_blank" rel="noopener">Neural DSP MIDI control</a></li>
+      <li><a href="https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/envsettings_midi.htm" target="_blank" rel="noopener">FL Studio MIDI docs</a></li>
+      <li><a href="https://harmonicbuzz.com/mapping-a-midi-controller-to-reapers-transport-controls/" target="_blank" rel="noopener">REAPER MIDI mapping</a></li>
+      <li><a href="https://www.pantheraudio.com/" target="_blank" rel="noopener">Paint Audio (manufacturer)</a></li>
+    </ul>
+  </section>
+
+  </aside>
+
+</main>
+
+<footer class="footer">
+  <span data-i18n="footer_storage">state lives in localStorage — clears never unless you do</span>
+  <span class="footer-sep">·</span>
+  <span data-i18n="footer_tech">vanilla JS, zero deps</span>
+  <span class="footer-sep">·</span>
+  <a href="https://github.com/" target="_blank" rel="noopener" data-i18n="footer_source">source</a>
+</footer>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

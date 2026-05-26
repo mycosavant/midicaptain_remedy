@@ -1,0 +1,123 @@
+[globalsetup]
+ledbright = [30]
+screenbright = [80]
+dark_fonts = [off]
+wallpaper = [wp1]
+long_press_timing = [1]
+WIRELESS_2.4G = [on]
+WIRELESS_ID   = [8]
+WIRELESS_dB   = [6]
+
+
+[PAGE]
+# HELIX NATIVE + CUSTOM LOOPER
+# CCs come directly from the Helix MIDI implementation chart:
+#   Snapshots:  CC 69, val = snapshot index (0-7)
+#   Tuner:      CC 68, val 0-127
+#   Tap tempo:  CC 64, val 64-127
+#   Looper rec/ovd:   CC 60  (64-127 = record, 0-63 = overdub)
+#   Looper play/stop: CC 61  (64-127 = play,   0-63 = stop)
+#   Looper play-once: CC 62  (val 64-127)
+#   Looper undo:      CC 63  (val 64-127)
+# If your custom looper uses different CCs, edit the [CC] numbers below
+# (or MIDI-Learn it to the same CCs to share controls with Helix's looper).
+page_name = [HXLP]
+
+exp1_CH = [1]
+exp1_CC = [1]
+
+exp2_CH = [1]
+exp2_CC = [11]
+
+encoder_CC = [7]
+encoder_NAME = [VOL]
+
+midithrough = [on]
+
+display_number_ABC = [abc4]
+group_number = [4]
+display_pc_offset = [1]
+display_bank_offset = [1]
+
+# --- Top row: Helix snapshots 1-4 + tuner -----------------------------------
+
+[key0]
+# Snapshot 1
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x00ff00][0x00ff00][0x00ff00]
+short_dw1 = [1][CC][69][0]
+
+[key1]
+# Snapshot 2
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0xffaa00][0xffaa00][0xffaa00]
+short_dw1 = [1][CC][69][1]
+
+[key2]
+# Snapshot 3
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][69][2]
+
+[key3]
+# Snapshot 4
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0xaa00ff][0xaa00ff][0xaa00ff]
+short_dw1 = [1][CC][69][3]
+
+[key4]
+# TUNER toggle (CC 68 127 = on, 0 = off); long-press = bank+
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][CC][68][127]
+long1 = [1][PC][auto][bank_inc]
+
+ledcolor2 = [0x222222][0x222222][0x222222]
+short_dw2 = [1][CC][68][0]
+long2 = [1][PC][auto][bank_inc]
+
+# --- Bottom row: looper transport + tap + undo ------------------------------
+
+[key5]
+# REC (CC 60 val 127)
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][60][127]
+
+[key6]
+# PLAY/STOP (CC 61 toggle 127/0)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0x00ff00][0x00ff00][0x00ff00]
+short_dw1 = [1][CC][61][127]
+
+ledcolor2 = [0x002200][0x002200][0x002200]
+short_dw2 = [1][CC][61][0]
+
+[key7]
+# OVERDUB (CC 60 val 0)
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffaa00][0xffaa00][0xffaa00]
+short_dw1 = [1][CC][60][0]
+
+[key8]
+# TAP TEMPO (CC 64)
+keytimes = [1]
+ledmode = [tap]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][64][64]
+
+[key9]
+# UNDO (CC 63 val 127); long-press = bank-
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffff00][0xffff00][0xffff00]
+short_dw1 = [1][CC][63][127]
+long1 = [1][PC][auto][bank_dec]

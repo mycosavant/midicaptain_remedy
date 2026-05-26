@@ -1,0 +1,141 @@
+[globalsetup]
+# globalsetup items in page0 is applied to all pages
+# Lines starting with # are treated as comments
+
+# 0-100
+ledbright = [30]
+
+# 0-100
+screenbright = [80]
+
+# on / off --Selecting black or white fonts according to the wallpaper background
+dark_fonts = [off]
+
+# wp1 --Only one wallpaper coming along with the FW package now, you can add later
+wallpaper = [wp1]
+
+# 1 / 1.5 / 2 / 2.5 --long press time in second
+long_press_timing = [1]
+
+# wireless setup only valid on MIDI Captain Blue/Gold version
+WIRELESS_2.4G = [on]
+
+# ID range 1-99 --Set to be the same with the MIDI MATE
+WIRELESS_ID   = [8]
+
+# 0:12dBm 1:10dBm 2:9dBm 3:8dBm 4:6dBm 5:3dBm 6:0dBm 7:-2dBm 8:-5dBm 9:-10dBm 10:-15dBm 11:-20dBm 12:-25dBm 13:-30dBm 14:-25dBm
+WIRELESS_dB   = [6]
+
+
+[PAGE]
+# BOSS KATANA --- GA-FC compatible CC + PC channel switching
+# Effects on top row (toggle), channels on bottom row (PC), tap + bank nav.
+# Encoder = Volume (CC7). EXP1 = wah/expression (CC1). EXP2 = volume (CC7).
+page_name = [KTNA]
+
+exp1_CH = [1]
+exp1_CC = [1]
+
+exp2_CH = [1]
+exp2_CC = [7]
+
+encoder_CC = [7]
+encoder_NAME = [VOL]
+
+midithrough = [on]
+
+# 123 / abc3 / abc4 / abc5 / abc8
+display_number_ABC = [abc4]
+
+group_number = [4]
+
+display_pc_offset = [1]
+
+display_bank_offset = [1]
+
+# --- Top row: effect toggles (GA-FC CC mapping) -----------------------------
+
+[key0]
+# BOOST (CC16) -- press = ON full color, press = OFF dim color
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0x00ff00][0x00ff00][0x00ff00]
+short_dw1 = [1][CC][16][127]
+
+ledcolor2 = [0x002200][0x002200][0x002200]
+short_dw2 = [1][CC][16][0]
+
+[key1]
+# MOD (CC17)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0x0080ff][0x0080ff][0x0080ff]
+short_dw1 = [1][CC][17][127]
+
+ledcolor2 = [0x000a22][0x000a22][0x000a22]
+short_dw2 = [1][CC][17][0]
+
+[key2]
+# DELAY (CC19)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xffaa00][0xffaa00][0xffaa00]
+short_dw1 = [1][CC][19][127]
+
+ledcolor2 = [0x221500][0x221500][0x221500]
+short_dw2 = [1][CC][19][0]
+
+[key3]
+# REVERB (CC20)
+keytimes = [2]
+ledmode = [normal]
+ledcolor1 = [0xaa00ff][0xaa00ff][0xaa00ff]
+short_dw1 = [1][CC][20][127]
+
+ledcolor2 = [0x110022][0x110022][0x110022]
+short_dw2 = [1][CC][20][0]
+
+[key4]
+# BANK+ (next bank of patches) / long-press = page next
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][PC][auto][bank_inc]
+
+# --- Bottom row: channel select (PC) + tap + bank- --------------------------
+
+[key5]
+# CH1 (PC 0)
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x00ffff][0x00ffff][0x00ffff]
+short_dw1 = [1][PC][auto][0]
+
+[key6]
+# CH2 (PC 1)
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x00ffff][0x00ffff][0x00ffff]
+short_dw1 = [1][PC][auto][1]
+
+[key7]
+# CH3 (PC 2)
+keytimes = [1]
+ledmode = [select]
+ledcolor1 = [0x00ffff][0x00ffff][0x00ffff]
+short_dw1 = [1][PC][auto][2]
+
+[key8]
+# TAP TEMPO -- Katana accepts CC64 for tap
+keytimes = [1]
+ledmode = [tap]
+ledcolor1 = [0xff0000][0xff0000][0xff0000]
+short_dw1 = [1][CC][64][64]
+long1 = [1][CC][68][127]
+
+[key9]
+# BANK-
+keytimes = [1]
+ledmode = [normal]
+ledcolor1 = [0xffffff][0xffffff][0xffffff]
+short_dw1 = [1][PC][auto][bank_dec]
