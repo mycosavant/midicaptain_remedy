@@ -33,12 +33,14 @@ firmware/
 ├── rust-toolchain.toml     ← pins stable + thumbv6m-none-eabi
 ├── .cargo/config.toml      ← dual runner (UF2 default, probe-rs alt)
 ├── src/
-│   ├── lib.rs              ← `pub mod pins`
-│   └── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
+│   ├── lib.rs              ← `pub mod pins, display`
+│   ├── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
+│   └── display.rs          ← ST7789 driver wrapper (mipidsi 0.10 + embedded-graphics)
 ├── examples/               ← runnable PoC binaries (this session)
 │   ├── blink.rs
 │   ├── serial_echo.rs
-│   └── midi_passthrough.rs
+│   ├── midi_passthrough.rs
+│   └── display_splash.rs   ← bring up ST7789, render Remedy splash
 ├── README.md               ← build/flash quickstart
 ├── ARCHITECTURE.md         ← this file
 └── HARDWARE.md             ← pin map, SWD pad location (TBD)
@@ -50,6 +52,7 @@ Future modules (rough plan, lands one per follow-up session):
 src/
 ├── lib.rs
 ├── pins.rs                 ← (today)
+├── display.rs              ← (today — driver only; scene-graph layer TBD)
 ├── hal/                    ← thin wrappers over embassy-rp peripherals
 │   ├── buttons.rs          ← debounced edge detector → Channel<ButtonEvent>
 │   ├── encoder.rs          ← quadrature decoder → Channel<EncoderEvent>
@@ -59,7 +62,7 @@ src/
 │   ├── mux.rs              ← USB + DIN combined I/O
 │   ├── sysex.rs            ← parse / build streaming SysEx
 │   └── katana.rs           ← Roland model-ID + helpers (port from remedy/lib/midi.py)
-├── display/                ← mipidsi + embedded-graphics scene graph
+├── ui/                     ← scene graph atop display.rs (port DisplayElement / ValueBar / TextPanel from remedy/lib/display.py)
 ├── config/                 ← serde-toml load from flash KV, or binary fmt
 ├── storage/                ← sequential-storage over embassy_rp::flash
 ├── sync/                   ← COBS+CRC16 wire protocol for webapp sync
@@ -147,8 +150,18 @@ exist, here's why these:
 - **smart-leds** (used implicitly via PIO WS2812 driver): standard color
   type. The PIO program ships in embassy-rp under
   `pio_programs::ws2812`.
-- **mipidsi** for the ST7789 (planned, not in this PoC): widely adopted,
-  works with `embedded-graphics`, supports the 180° rotation we need.
+- **mipidsi 0.10** for the ST7789 (now wired up — see `src/display.rs`):
+  widely adopted, works with `embedded-graphics`, supports the 180°
+  rotation and 80-row offset we need. Ships its own
+  `interface::SpiInterface` — no separate `display-interface-spi`
+  crate (that was the 0.7/0.8 pattern).
+- **embedded-hal-bus** for `ExclusiveDevice`: wraps embassy-rp's
+  blocking `Spi` (an `SpiBus`) into the `SpiDevice` that mipidsi's
+  interface wants.
+- **embedded-graphics 0.8** for primitives + built-in mono fonts. PCF
+  font parity with the OEM PTSans set is deliberately out of scope for
+  v1 — using `mono_font::ascii::FONT_10X20` until the UI layer
+  stabilises and font fidelity becomes worth the effort.
 - **sequential-storage** for flash KV (planned): purpose-built for
   flash wear-leveling. Replaces the CP NVM hack for expression pedal
   calibration; same store can hold all settings.

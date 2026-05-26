@@ -38,6 +38,18 @@ embedded-io-async = { version = "0.7", features = ["defmt"] }
 smart-leds = "0.4"
 static_cell = "2"
 
+# ─── Display stack ───────────────────────────────────────────────────────
+# ST7789 lives behind mipidsi 0.10, which ships its own embedded-hal 1.0
+# `SpiInterface` — no separate `display-interface-spi` crate needed (that
+# was the mipidsi 0.7/0.8 pattern). `embedded-hal-bus::spi::ExclusiveDevice`
+# wraps embassy-rp's blocking `Spi` (an `SpiBus`) into the `SpiDevice` the
+# interface wants. `embedded-graphics` provides primitives and built-in
+# fonts; PCF font parity with the OEM is a later session.
+embedded-hal     = "1.0"
+embedded-hal-bus = "0.3"
+embedded-graphics = "0.8"
+mipidsi          = { version = "0.10", features = ["defmt"] }
+
 # Cortex-M0+ has no native CAS. `portable-atomic` polyfills it via
 # `critical-section`. Required because `static_cell` and several embassy
 # crates lean on AtomicBool::compare_exchange.
