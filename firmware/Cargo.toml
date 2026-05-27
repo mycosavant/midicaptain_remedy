@@ -50,6 +50,11 @@ embedded-hal-bus = "0.3"
 embedded-graphics = "0.8"
 mipidsi          = { version = "0.10", features = ["defmt"] }
 
+# Owned, allocator-free strings/vecs for widget state (TextPanel buffers,
+# wrapped-line slices). 0.9 is what the embassy 0.10 stack pulls in
+# transitively — using the same major avoids a third graph node.
+heapless = "0.9"
+
 # Cortex-M0+ has no native CAS. `portable-atomic` polyfills it via
 # `critical-section`. Required because `static_cell` and several embassy
 # crates lean on AtomicBool::compare_exchange.

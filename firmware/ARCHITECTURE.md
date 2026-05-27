@@ -33,14 +33,21 @@ firmware/
 ├── rust-toolchain.toml     ← pins stable + thumbv6m-none-eabi
 ├── .cargo/config.toml      ← dual runner (UF2 default, probe-rs alt)
 ├── src/
-│   ├── lib.rs              ← `pub mod pins, display`
+│   ├── lib.rs              ← `pub mod pins, display, ui`
 │   ├── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
-│   └── display.rs          ← ST7789 driver wrapper (mipidsi 0.10 + embedded-graphics)
+│   ├── display.rs          ← ST7789 driver wrapper (mipidsi 0.10 + embedded-graphics)
+│   └── ui/                 ← dirty-flag scene graph atop display.rs
+│       ├── mod.rs          ← Widget trait, Palette/Color re-exports
+│       ├── palette.rs      ← eager const Rgb565 palette (dim/dark = const fn)
+│       ├── element.rs      ← Widget trait (render → bool, mark_dirty)
+│       ├── value_bar.rs    ← 0..127 horizontal bar widget
+│       └── text_panel.rs   ← bordered multi-line text widget (heapless::String)
 ├── examples/               ← runnable PoC binaries (this session)
 │   ├── blink.rs
 │   ├── serial_echo.rs
 │   ├── midi_passthrough.rs
-│   └── display_splash.rs   ← bring up ST7789, render Remedy splash
+│   ├── display_splash.rs   ← bring up ST7789, render Remedy splash
+│   └── display_widgets.rs  ← animate ValueBar + TextPanel, log dirty-flag gating
 ├── README.md               ← build/flash quickstart
 ├── ARCHITECTURE.md         ← this file
 └── HARDWARE.md             ← pin map, SWD pad location (TBD)
@@ -52,7 +59,8 @@ Future modules (rough plan, lands one per follow-up session):
 src/
 ├── lib.rs
 ├── pins.rs                 ← (today)
-├── display.rs              ← (today — driver only; scene-graph layer TBD)
+├── display.rs              ← (today — driver)
+├── ui/                     ← (today — Widget trait, palette, ValueBar, TextPanel)
 ├── hal/                    ← thin wrappers over embassy-rp peripherals
 │   ├── buttons.rs          ← debounced edge detector → Channel<ButtonEvent>
 │   ├── encoder.rs          ← quadrature decoder → Channel<EncoderEvent>
@@ -62,7 +70,6 @@ src/
 │   ├── mux.rs              ← USB + DIN combined I/O
 │   ├── sysex.rs            ← parse / build streaming SysEx
 │   └── katana.rs           ← Roland model-ID + helpers (port from remedy/lib/midi.py)
-├── ui/                     ← scene graph atop display.rs (port DisplayElement / ValueBar / TextPanel from remedy/lib/display.py)
 ├── config/                 ← serde-toml load from flash KV, or binary fmt
 ├── storage/                ← sequential-storage over embassy_rp::flash
 ├── sync/                   ← COBS+CRC16 wire protocol for webapp sync

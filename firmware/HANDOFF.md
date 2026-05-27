@@ -1,265 +1,219 @@
-# Handoff — next session: hardware validation + UI scene graph
+# Handoff — next session: hardware validation + application binary
 
-You're picking up the Rust + Embassy port two sessions in. The bootstrap
-scaffold and the ST7789 display driver both compile clean; neither has
-been flashed yet. Read this top-to-bottom before touching anything.
+Three sessions in. Bootstrap, ST7789 driver, and dirty-flag scene-graph
+are all compiled and committed; nothing has been flashed yet. Read this
+top-to-bottom before touching anything.
 
 ## TL;DR
 
-- Branch: `claude/stupefied-euclid-34d8b5` (or whatever GitHub renamed
-  it to after merge), stacked on `rust-embassy-port` which is the
-  PR #2 branch. **Don't open or merge a PR against `main`** — the
-  port stays off `main` until it can fully replace the CP firmware.
-  See your memory file `project-rust-port-branching` for the durable
-  rule.
-- `firmware/` builds clean
-  (`cargo build --examples --release` and
+- Branch: `claude/stupefied-euclid-34d8b5` → `claude/optimistic-davinci-85355e`,
+  stacked on `rust-embassy-port` (PR #2). **Don't open a PR against
+  `main`** — see your memory `project-rust-port-branching`.
+- `firmware/` builds clean (`cargo build --examples --release` and
   `cargo clippy --examples --release -- -D warnings`).
-- Four example binaries compile; **none have been flashed yet**. Your
-  first move on real hardware is `cargo run --release --example
-  display_splash`. If you see two pixels in opposite corners with the
-  chassis label upright, plus centred "MIDICaptain Remedy" text,
-  geometry is correct and you're cleared for the UI work.
-- Your real task: stand up the UI scene-graph layer
-  (`DisplayElement` / `ValueBar` / `TextPanel` port from
-  `remedy/lib/display.py`).
+- Five example binaries compile. `display_widgets` is the live demo of
+  the scene-graph layer landed last session.
+- Hardware validation is still **outstanding**: nothing in
+  `examples/display_*.rs` has actually been flashed yet. First move on
+  real hardware: `cargo run --release --example display_splash`. If
+  geometry checks out (corner-pixel cheat code), follow up with
+  `display_widgets` and watch the `defmt` log for dirty-flag gating.
 
 ## What landed last session
 
 ```
 firmware/
 ├── src/
-│   ├── display.rs           NEW — mipidsi 0.10 wrapper, type aliases,
-│   │                              init() factory, 80-row offset + 180°
-│   │                              rotation baked in. No reset pin. No
-│   │                              NVM-guarded-reset (CP-only quirk).
-│   ├── lib.rs               +  pub mod display;
-│   └── pins.rs              unchanged
+│   ├── ui/                       NEW — scene-graph layer
+│   │   ├── mod.rs                Widget trait + Palette re-exports
+│   │   ├── palette.rs            const Color (8-bit) + const fn
+│   │   │                         dim/dark + const to_rgb565
+│   │   ├── element.rs            Widget trait: render → bool, mark_dirty
+│   │   ├── value_bar.rs          0..=127 horizontal bar, outline + fill
+│   │   └── text_panel.rs         bordered multi-line text, heapless::String
+│   ├── lib.rs                  + pub mod ui;
+│   └── display.rs              unchanged (still the mipidsi facade)
 ├── examples/
-│   └── display_splash.rs    NEW — corner pixels at (0,0) red and
-│                                  (239,239) green + centred text.
-├── Cargo.toml               + mipidsi 0.10, embedded-graphics 0.8,
-│                              embedded-hal 1.0, embedded-hal-bus 0.3.
-│                              NOT display-interface-spi — mipidsi 0.10
-│                              ships its own interface::SpiInterface.
-└── ARCHITECTURE.md          display moved from "Future modules" to
-                             actual; new ui/ slot for scene-graph layer.
+│   └── display_widgets.rs        NEW — animates ValueBar 0..127..0 at
+│                                 20 Hz, updates TextPanel on band edges,
+│                                 logs every frame's draw/skip decision
+├── Cargo.toml                  + heapless 0.9 (already transitive)
+└── ARCHITECTURE.md             ui/ moved from "Future modules" to actual
 ```
 
-The PR for this work is **#3 (stacked on #2)**. When #2 merges to
-`SAFE_main`, GitHub auto-rebases #3's base.
+PR for this work: **#5 (stacked on #4 stacked on #2)**. When #2 + #4
+merge to `rust-embassy-port`, GitHub auto-rebases.
 
 ## Your task (priority order)
 
-### 1. Flash `display_splash` and validate geometry (15 min if it works)
+### 1. Flash and validate (the long-deferred step)
+
+Two example binaries to drive:
 
 ```powershell
 # From firmware/:
-cargo run --release --example display_splash
+cargo run --release --example display_splash    # static splash + corner pixels
+cargo run --release --example display_widgets   # animated, with defmt log
 ```
 
-Hold Switch 1 at power-on to enter BOOTSEL (or run
-`py ..\scripts\bootsel_hammer.py` against `serial_echo` if you have
-that flashed). `elf2uf2-rs -d` will drop the UF2.
+Enter BOOTSEL: hold Switch 1 at power-on, *or* run
+`py ..\scripts\bootsel_hammer.py` against a running `serial_echo`.
 
-**Expected (success):** Dark grey screen with a thin border, "MIDICaptain
-Remedy" centred in white, "Rust + Embassy port" subtitle below. Single
-red pixel at top-left, single green pixel at bottom-right — *from the
-viewer's POV with the chassis upright*.
+**`display_splash` success criteria** (from session 2's HANDOFF — still
+the source of truth for geometry):
 
-**Possible failures and the fix:**
+- Dark grey screen, thin border, "MIDICaptain Remedy" centred white,
+  "Rust + Embassy port" subtitle below.
+- Single red pixel at the *viewer's* top-left.
+- Single green pixel at the *viewer's* bottom-right.
+- See `git show f000029` for the symptom→fix table if anything's off.
 
-| Symptom | Likely cause | Fix in `src/display.rs` |
-|---|---|---|
-| Blank screen, backlight on | DC pin wrong, or SPI silent | Check GP12 (DC) and GP14/15 (SPI1 SCK/MOSI) against `pins.rs` |
-| Mirrored text (reads R→L) | Orientation off | Toggle `.flip_horizontal()` on the `Orientation` |
-| Image scrolled vertically | Wrong `display_offset` | Y offset must be 80, not 0 or 40 |
-| Text upside-down | Missing rotation | Confirm `Rotation::Deg180`, not `Deg0` |
-| Garbled colours (red↔blue) | Colour order | `.color_order(ColorOrder::Bgr)` |
-| Corner pixels visible at wrong coords | Offset + rotation interaction | Read [`../remedy/lib/display.py`](../remedy/lib/display.py) — CP's working config is the ground truth |
+**`display_widgets` success criteria** (new):
 
-The corner-pixel pattern is your cheat code. Drawing both pixels
-*before* any rotation/offset experimentation makes the geometry bug
-visible in one frame.
+- Cyan value bar grows/shrinks across the upper half of the screen on a
+  ~4-second triangle wave.
+- Blue text panel below flips through "LOW" / "MID" / "HIGH" at value
+  bands 0–41, 42–83, 84–127.
+- The RTT log should show `bar=DREW` every frame and `panel=DREW` only
+  on the ~4 frames per sweep where the band crosses. If the panel says
+  `DREW` *every* frame, dirty-flag gating is broken — likely a setter
+  that always marks dirty regardless of equality.
 
-### 2. UI scene-graph layer (the real session work)
+If the bar's value text overlaps the fill awkwardly, that's a font-
+metrics issue not a correctness bug. Document it; don't chase fonts
+this session (see "Font fidelity" below).
 
-Port the three dirty-flag widgets from
-[`../remedy/lib/display.py`](../remedy/lib/display.py) to Rust. The CP
-code is 623 LOC of well-organised class hierarchy. Take it one widget
-at a time:
+### 2. Application binary — `src/bin/midicaptain.rs`
+
+The examples are transport tests. Time for the first slice of the real
+app. Scope this *small*: implement the minimum task graph from
+[`ARCHITECTURE.md`](ARCHITECTURE.md) needed to prove the channel pump:
 
 ```
-firmware/src/
-├── display.rs               ← driver (do not bloat — keep as facade)
-└── ui/                      ← NEW — scene graph
-    ├── mod.rs               ← pub use, common types
-    ├── palette.rs           ← ColorPalette: named colours, dim/dark
-    │                          variants. Port the COLORS dict at
-    │                          remedy/lib/display.py:44-67.
-    ├── element.rs           ← Drawable trait + dirty flag.
-    │                          remedy/lib/display.py:130-176.
-    ├── value_bar.rs         ← Encoder feedback widget.
-    │                          remedy/lib/display.py:178-313.
-    └── text_panel.rs        ← Labeled text box.
-                               remedy/lib/display.py:315-424.
+buttons task ──ButtonEvent──▶ router task ──DisplayCmd──▶ display task
 ```
 
-#### The dirty-flag pattern in Rust
+Concretely:
 
-CP uses an OO base class with `mark_dirty()` / `clear_dirty()`. Rust's
-analogue is a small trait:
+- One Embassy task per box. Bounded `embassy_sync::channel::Channel`
+  between them (capacity 8 is fine for the demo).
+- `buttons` task: poll 1–2 GPIO inputs with debouncing (port the simple
+  pattern from `../remedy/lib/hardware.py::ButtonHandler` — 5 ms
+  settle is plenty). Channel sends `ButtonEvent { id, pressed }`.
+- `router` task: maintain a counter per button, send `DisplayCmd::ShowCounter(id, n)`
+  whenever a press fires.
+- `display` task: owns `RemedyDisplay` + one `TextPanel` per button.
+  Renders on `DisplayCmd` receipt. No 30-Hz tick yet — pure event-
+  driven.
 
-```rust
-pub trait Widget {
-    /// Draw the widget into the target if anything has changed since
-    /// the last call. Returns true if drawing actually happened.
-    fn render<D: DrawTarget<Color = Rgb565>>(
-        &mut self,
-        target: &mut D,
-    ) -> Result<bool, D::Error>;
+This is the smallest possible end-to-end vertical slice. Once it
+works, the rest of the task graph fills in by analogy.
 
-    /// Force a redraw on the next render() call.
-    fn mark_dirty(&mut self);
-}
-```
+**Don't** wire up the encoder, LEDs, MIDI, or expression pedals yet —
+each deserves its own session-sized chunk. The point here is to prove
+the channel plumbing.
 
-The key insight from CP: dirty-flag tracking is *per-widget state*, not
-per-frame. A `ValueBar` owns its last-rendered value and only redraws
-when the value changes. Don't try to be clever with a global dirty
-region — embedded-graphics has no scissor concept, and partial redraws
-on SPI are bandwidth-limited anyway. Just gate the whole-widget redraw.
+### 3. Stretch — encoder + WS2812 LED feedback
 
-#### Colour-palette design
+If the app binary lands quickly: add the encoder task (quadrature
+decode from `remedy/lib/hardware.py::EncoderHandler`) and pipe its
+turns into the same router. Optionally extend `router` to drive a tiny
+WS2812 strip frame ("LED for button N lights when pressed"). The PIO
+driver pattern is in `examples/blink.rs`.
 
-CP's `ColorPalette` lazily caches dim/dark variants. In Rust, do the
-opposite: compute *eagerly* at compile time. Named colours are `const`
-Rgb565s, and `dim()` / `dark()` are `const fn`s that return new Rgb565s
-by bit-shifting. No cache needed — the compiler memoises constants for
-free.
+Don't half-finish this. If you can't get a full vertical slice working,
+leave it for session five.
 
-```rust
-pub const RED: Rgb565 = Rgb565::new(31, 0, 0);
-pub const fn dim(c: Rgb565, factor: u8) -> Rgb565 { /* div */ }
-```
+## Quirks & gotchas — additions
 
-(`embedded-graphics` `Rgb565` is 5/6/5-bit per channel; the CP code's
-255-scale RGB tuples will need scaling down.)
-
-#### Demo binary
-
-Add `examples/display_widgets.rs` that animates a `ValueBar` and
-updates a `TextPanel` — proves the dirty-flag gating actually reduces
-draw calls. Use `defmt::info!` to log "redrew bar" / "skipped bar" per
-frame.
-
-### 3. Application binary (`src/bin/midicaptain.rs`) — only if you have time
-
-This is where the task graph in
-[`ARCHITECTURE.md`](ARCHITECTURE.md) starts to materialise. First task
-to wire up: `buttons` → `router` → `display`. Stub the router as
-"forward button events to a `TextPanel`". This proves the channel
-plumbing works.
-
-If you don't get here, leave it for session four. Don't half-do it.
-
-## Quirks & gotchas
-
-Add new ones as you hit them. The bootstrap session's list is
-preserved at the bottom; here are the *display-driver* gotchas worth
-inheriting:
+Session 3 was uneventful; no new gotchas worth inheriting beyond:
 
 | # | Symptom | Cause | Fix |
 |---|---|---|---|
-| D1 | `Output::new` / `Spi::new_blocking_txonly` reject pin args | embassy-rp 0.10 wraps pins in `Peri<'d, T>` | Struct fields holding pins must be typed `Peri<'static, PIN_xx>`, not bare `PIN_xx`. See `DisplayPeripherals` in `display.rs`. |
-| D2 | `mipidsi::Display` generic type is unwieldy in user code | RST=`NoResetPin`, DI is a 3-param SpiInterface | Use the `RemedyDisplay` type alias from `display.rs`. Don't redefine. |
-| D3 | `display-interface-spi` 0.5 doesn't exist on the dep tree | mipidsi 0.10 ships its own `SpiInterface` | Use `mipidsi::interface::SpiInterface`. HANDOFF was stale on this. |
-| D4 | `#[cfg_attr(feature = "defmt", derive(defmt::Format))]` warning | We don't define a `defmt` feature on our crate (defmt is always-on) | Derive `defmt::Format` unconditionally. |
-| D5 | Two `defmt` versions in the dep graph (1.0 + 0.3) | embedded-graphics-core pulls 0.3 transitively | Harmless — coexist as separate graph nodes. Costs a few KB binary, no functional issue. Leave it. |
+| U1 | `defmt::info!` rejects `{:>4}` width specifiers | defmt format strings are a tiny subset of Rust's; only positional and `:?` work | Drop the width spec or use Rust's `core::fmt::Write` against a `heapless::String` buffer first |
 
-Bootstrap-session gotchas (#1–#8 in the previous HANDOFF) are still
-valid; check `git log -p firmware/HANDOFF.md` if you need them.
+Previous gotchas (D1–D5 display, #1–#8 bootstrap) remain in
+`git log -p firmware/HANDOFF.md` if you need them.
 
-## How to flash & test on hardware
+## Watch-outs specific to the app binary
 
-Same as before — `cargo run --release --example <name>` produces a UF2
-via `elf2uf2-rs -d`. Recovery via `py ..\scripts\bootsel_hammer.py`
-against a flashed `serial_echo` works.
+- **Single executor.** The default thread-mode executor is fine. Don't
+  reach for the interrupt executor unless something measurable demands
+  it.
+- **`#[embassy_executor::main]` returns one task.** Spawn the rest with
+  `spawner.spawn(task_fn(args).unwrap())`. Gotcha #5 from the bootstrap
+  HANDOFF: there's no `must_spawn` API in 0.10.
+- **Channels need a `'static` ground.** Use `static_cell::StaticCell`
+  to land them in `.bss` (look at how `display.rs`'s `SPI_BUF` does
+  it). Or `static CHANNEL: Channel<...> = Channel::new();` directly —
+  `embassy_sync::channel::Channel::new()` is `const fn`.
+- **Don't pull `ui::TextPanel` into the router task.** The display
+  task owns the widget; the router only sends commands. This keeps
+  the borrow graph trivial.
 
-The SWD pad location in [`HARDWARE.md`](HARDWARE.md) is still TBD. If
-the owner shares their reverse-engineering docs this session, fill it
-in. That unlocks `probe-rs run` for live RTT logging — much faster
-iteration than UF2 reflash.
+## Font fidelity (deferred again)
+
+The OEM PCF fonts (PTSans variants in `../MIDICAPTAIN_OEM_BACKUP/
+fonts/`) are still on the back burner. embedded-graphics built-in
+fonts work; the scene graph isn't locked to a specific font (every
+widget takes `&'static MonoFont<'static>`). When you do tackle this:
+
+1. `pcf2bdf` (`apt-get install pcf2bdf` or compile from source).
+2. `u8g2-fonts` reads BDF; add it as a dep and swap in.
+3. Or bake a custom `MonoFont` from the bitmap data via
+   `embedded-graphics`' raw-data constructors.
+
+Don't fold it in alongside other work — it's a session of its own.
 
 ## Branch / repo invariants
 
-(Re-stated from previous HANDOFF — these don't change.)
+(Unchanged.)
 
 - Don't modify `../remedy/`, `../webapp/`, `../MIDICAPTAIN_OEM_BACKUP/`,
   `../presets/`, or root `../CLAUDE.md`. All firmware work goes in
   `firmware/`.
-- Don't expose USB MSC. The whole point is the device owns flash
-  exclusively.
-- Don't merge to `main`. Stack on `rust-embassy-port` (or push directly
-  if PR #2 has merged by the time you read this).
-- Commit `Cargo.lock` (binary-producing crate).
+- Don't expose USB MSC.
+- Don't merge to `main`. Stack on `rust-embassy-port`.
+- Commit `Cargo.lock`.
 - Run `cargo clippy --examples --release -- -D warnings` before
   pushing.
-
-## Watch-outs specific to UI work
-
-- **Memory.** Each widget owns a small amount of state (last value,
-  string buffer). Use `heapless::String<N>` for text, not `alloc`. We
-  have no allocator and don't want one.
-- **Font fidelity vs. effort.** The OEM uses PTSans PCF bitmap fonts.
-  embedded-graphics doesn't read PCF natively. *Do not* bikeshed font
-  conversion this session. Built-in `FONT_10X20` is ugly but works;
-  ship the scene graph first, swap fonts later. If/when you do it,
-  `u8g2-fonts` reads BDF (convert PCF→BDF with `pcf2bdf`).
-- **Don't port `DisplayManager`'s layer/mode-switching directly.** CP
-  needs it because `displayio.Group` is its API. Rust has no implicit
-  scene tree — `render()` calls are just sequential `Drawable.draw()`
-  invocations against the target. A "mode" is just "which widgets does
-  the app render this frame." Encode it in the app state machine, not
-  the display layer.
-- **Tuner mode is its own beast.** `remedy/lib/tuner.py` drives a
-  large note glyph + cents-deviation needle. Skip it this session
-  unless the scene graph lands fast.
 
 ## Concrete deliverable for next session
 
 When you're done:
 
 ```powershell
-cargo run --release --example display_widgets
+cargo run --release --example display_widgets   # validated on hardware
+cargo run --release --bin midicaptain           # NEW — runs the app
 ```
 
-…shows an animating value bar (use a `Ticker` to cycle 0..127) and a
-text panel showing the current value, with `defmt::info!` showing that
-the bar redraws only when the value changes and the panel redraws only
-when the displayed string changes. Plus clean clippy, plus an updated
-ARCHITECTURE.md and a (smaller) HANDOFF.md.
+…and pressing a footswitch causes a text panel on the display to
+update via the channel pump. `defmt` log shows the round-trip:
 
-Estimated effort: 3–5 hours. The hard part is choosing how granular
-the trait surface is (one `Widget` trait? `Drawable` + `DirtyTracker`
-split?). Don't overthink — one trait, lift only what hurts. The right
-abstractions reveal themselves once two or three widgets are in.
+```
+[INFO ] buttons: SW0 pressed
+[INFO ] router: SW0 press → counter=3
+[INFO ] display: ShowCounter(0, 3) → DREW
+```
 
-## On context handoffs (meta)
+Plus clean clippy, plus an even shorter HANDOFF.md for session five.
 
-The previous HANDOFF was load-bearing because the task was
-"implement a non-trivial driver from scratch with subtle hardware
-quirks." This one can be shorter because:
+## Meta (continuing the previous note)
 
-- The driver is in the repo — read `src/display.rs`, not prose about it.
-- The scene-graph port has a clear reference (`remedy/lib/display.py`).
-- The gotchas list is shrinking as the codebase grows past its
-  bootstrap.
+The previous HANDOFF said "encode forward-looking knowledge in
+HANDOFF.md, and let code + commit history + PR description carry the
+backward-looking knowledge." That advice held. This file is the
+shortest yet because:
 
-If you're handing off again, follow the same principle: encode
-*forward-looking* knowledge (next task, scope guardrails, known
-gotchas not yet hit) in HANDOFF.md, and let code + commit history +
-PR description carry the *backward-looking* knowledge (what was done
-and why).
+- The scene-graph layer is in `src/ui/` — read it, not prose about it.
+- The dirty-flag pattern's only design call worth restating is "one
+  trait, not Drawable + DirtyTracker split" — see `element.rs`'s
+  module doc.
+- Session 4 has a clean reference (`../remedy/lib/hardware.py`,
+  `../remedy/lib/events.py`, `../remedy/main.py`) for the buttons →
+  router → display pipeline.
+
+Same principle applies to your handoff — when the application binary
+lands, the next session's HANDOFF can be even shorter.
 
 Good luck.
