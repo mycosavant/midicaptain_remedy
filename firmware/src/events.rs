@@ -46,6 +46,10 @@ pub enum MidiRx {
     ControlChange { channel: u8, cc: u8, value: u8 },
     ProgramChange { channel: u8, program: u8 },
     Note { channel: u8, note: u8, velocity: u8, on: bool },
+    /// 14-bit pitch bend, `0..=16383`, centre `8192`. Carried inbound only
+    /// (the tuner reads cents from the amp's pitch bend); there is no
+    /// outbound `MidiCmd` counterpart since the firmware never sends it.
+    PitchBend { channel: u8, value: u16 },
 }
 
 /// Outbound MIDI command, fanned to USB + DIN by the mux task. SysEx
