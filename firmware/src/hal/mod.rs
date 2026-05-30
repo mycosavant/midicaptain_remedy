@@ -10,9 +10,10 @@
 //! Landed:
 //! - [`expression`] — the two ADC expression pedals (GP27/GP28) →
 //!   [`crate::events::ExprEvent`].
+//! - [`leds`] — drives the 30-pixel WS2812 chain on GP7 from `LedFrame`s.
 //!
-//! Planned (per `ARCHITECTURE.md`): `buttons`, `encoder`, `leds`. They slot
-//! in here as sibling modules, each with its own `*_task` and channel
-//! aliases.
+//! Planned (per `ARCHITECTURE.md`): `buttons`, `encoder`. They slot in here
+//! as sibling modules, each with its own `*_task` and channel aliases.
 
 pub mod expression;
+pub mod leds;
