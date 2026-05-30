@@ -134,6 +134,27 @@ Features (CP refs): **settings menu** (`menu.py`), **tuner** (`tuner.py`),
   CC#25 = 0 and returns to performance. The display task wipes the screen on
   the Normal↔Tuner layout switch (`Screen` enum). *Deferred:* a larger note
   glyph (only `FONT_10X20` is built-in) and cents smoothing (CP averaged 3).
+- *Tuner — KEY FINDING (2026-05-30):* the cooperative model above **does not
+  work with the Katana**. The amp does its tuning internally and broadcasts
+  **nothing** over MIDI (zero tuner refs anywhere in `docs/dev/KATANA/`); the
+  HKAudio "tuner" (`HKAudio_firmware/src/code.py:40,512-651`) is not a tuner at
+  all — it *receives* CC#25 + Note + Pitch Bend from **host software** that did
+  the pitch detection. So the display half is correct but had no data source.
+- *Tuner — chosen direction: on-device DSP (Path B), standalone.* The MIDI
+  Captain has a free `ADC0`/GP26, and the RP2040 can detect pitch itself.
+  **Phase 1 LANDED** (`feat/wave3-tuner-dsp`): `src/pitch.rs` = fixed-point
+  **YIN** detector (`PitchDetector::detect(&[i16], &mut [i64]) -> Pitch`) +
+  `freq_to_note_cents` (LUT log2); verified by `examples/pitch_selftest.rs`
+  (synthesised tones, on-device `defmt::assert!`) and an offline integer-exact
+  Python mirror — all notes/cents correct, harmonic-rich tone resolves to the
+  fundamental (no octave error), silence rejects. **Phase 2 LANDED:** analog
+  front-end spec in `HARDWARE.md` (line-out → AC-couple → mid-rail bias →
+  rail-to-rail buffer → ~3.5 kHz anti-alias LPF → GP26). **Phase 3 PENDING
+  (needs the hardware mod):** an `adc_task` that DMA-samples GP26 at ~16 kHz in
+  `Mode::Tuner`, runs the detector, and feeds `TunerView`; keep the
+  MIDI-receive path too (free remote-display fallback). The ADC is currently
+  owned by `expression_task` — Phase 3 must share/duplex it (audio in tuner
+  mode, pedals otherwise).
 - *Device sync* — boot/connect RQ1 sweep + a Katana DT1 response parser in
   `midi/katana.rs`; updates toggle LED states.
 - *Webapp sync — DEFERRED.* The existing webapp (on `main`, not the port) is
