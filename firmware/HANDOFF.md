@@ -52,71 +52,84 @@ Press footswitches → the status panel should show `<name> x<count>` and
 RTT should log `router: A pressed -> count=N` / `display: A xN`. That
 validates the channel architecture before fanning out work onto it.
 
-## The remaining trajectory (priority + parallelization)
+## Trajectory
 
 The router in `bin/midicaptain.rs` is the **shared integration surface**.
 Everything else is either an *independent module* that feeds the router
 through a channel (parallelisable), or *integrative* work that edits the
 router/app state (serialise it).
 
-### Step 0 — Planning task (do this first, it unblocks parallelism)
+### ✅ Wave 1 — DONE (merged to `SAFE_main`)
 
-Define the **channel contracts** in one place (suggest `src/events.rs` or
-`src/app.rs`): the message enums every task codes against —
-`ButtonEvent` (exists, in the bin), `EncoderEvent`, `ExprEvent`,
-`MidiRx`, `MidiCmd`, `LedFrame`, `DisplayCmd` (exists). Freeze these
-types first; then independent sessions can build against stable
-interfaces without colliding. This is the highest-leverage 30 minutes in
-the whole plan.
+Step 0 (freeze `src/events.rs` channel contracts) and the five independent
+modules all landed, each with a proof example, gate green:
 
-### Independent modules — safe to parallelise (new files, channel-driven)
+| Module | Files | Status |
+|---|---|---|
+| Channel contracts | `src/events.rs` | ✅ frozen, single def per type |
+| WS2812 LEDs | `src/hal/leds.rs` | ✅ `leds_task` consumes `LedFrame`; 10→30 px fan-out, `idle_dim` |
+| MIDI engine | `src/midi/{mux,sysex,katana}.rs` | ✅ USB+DIN mux, streaming SysEx, Roland/Katana builders (byte-exact self-test) |
+| Encoder | `src/hal/encoder.rs` | ✅ IRQ quadrature + accel + debounced push |
+| Expression | `src/hal/expression.rs` | ✅ async-ADC pedals + calibration map + wizard |
+| Storage | `src/storage.rs` | ✅ flash KV settings store (direct async accessor) |
 
-Each is a new `src/<area>/*.rs` + a spawnable task + its event type. They
-barely touch shared files, so they can run as concurrent subagents or
-parallel sessions and merge cleanly. CP reference in parens.
+None of these are wired into the router yet — that's Wave 2.
 
-| Module | New files | Feeds | CP reference | Notes |
-|---|---|---|---|---|
-| **WS2812 LEDs** | `src/hal/leds.rs` | consumes `LedFrame` | `remedy/lib/pins.py` LED_MAP, `hardware.py` brightness | `examples/blink.rs` already proves PIO/DMA; port per-switch RGB + idle dim + toggle states. 30 LEDs, 3/switch. |
-| **MIDI engine** | `src/midi/{mux,sysex,katana}.rs` | `MidiRx`→router, consumes `MidiCmd` | `remedy/lib/midi.py` | `examples/midi_passthrough.rs` proves USB↔DIN. Add SysEx reassembly across USB-MIDI 4-byte CINs; Roland checksum + Katana model ID. The biggest single chunk. |
-| **Encoder** | `src/hal/encoder.rs` | `EncoderEvent`→router | `remedy/lib/hardware.py` EncoderHandler | Quadrature on GP2/GP3, push GP0. GPIO-IRQ driven. |
-| **Expression** | `src/hal/expression.rs` | `ExprEvent`→router | `remedy/lib/hardware.py`, `menu.py` calib | ADC on GP27/28. Needs calibration storage (stub first, wire to Storage later). |
-| **Storage** | `src/storage.rs` | request/response | NVM layout in root `CLAUDE.md` | `sequential-storage` over `embassy_rp::flash`. Unblocks expression calibration + settings + config persistence. Foundational — worth doing early in parallel. |
+### ▶ Wave 2 — integration + config/page system (SERIAL, the driver owns the bin)
 
-### Integrative work — serialise (edits router / app state / display modes)
+This is the current focus. Concrete build sequence:
 
-These change `bin/midicaptain.rs` (or `app.rs` once extracted) and/or add
-display modes. One owner at a time to avoid churn on the shared file.
+**Phase A — prep (3 independent units; new/isolated code, parallelisable):**
+1. `hal/encoder.rs`: add `encoder_task` + `EncoderChannel/Sender/Receiver`
+   aliases (the module currently exposes only `Encoder`/`next_event`,
+   unlike `expression`/`leds` which already ship a task + aliases).
+2. `src/config/` (new): the action model — `Action` enum
+   (`MidiCc{cc,value|toggle}`, `ProgramChange`, `Sysex`, `PageNext`,
+   `PagePrev`, …), `ButtonConfig{label,color,on_press,on_long_press}`,
+   `Page{name,buttons:[_;10]}`, `Config{pages}` + a **baked-in default
+   `Config`** (Rust consts; flash-loaded TOML deferred). Ref:
+   `remedy/lib/{config,events}.py`, `remedy/config/*.toml`.
+3. `storage.rs`: fix the "16-bit ADC span" comment (RP2040 ADC is 12-bit)
+   and document the `PedalCal → expression::Calibration` mapping.
 
-1. **Config + page system** (`remedy/lib/config.py`, `events.py`,
-   `config/*.toml`). Defines what buttons *do* (CC/PC/SysEx/page-nav per
-   button per page). This is the router's brain — promote the stub
-   counter logic into real action dispatch. Start with a baked-in config
-   (serde over a `&str`), move to flash-loaded later.
-2. **Settings menu** (`remedy/lib/menu.py`). Encoder-driven; needs
-   encoder + display + storage. A display "mode."
-3. **Tuner** (`remedy/lib/tuner.py`). Big note glyph + cents needle;
-   pitch via MIDI. A display "mode." Self-contained once MIDI-in exists.
-4. **Device sync** (Katana RQ1 on boot → toggle LED states). Needs MIDI +
+**Phase B — integration spine (serial; edits the bin):** one `bind_interrupts!`
+merging `USBCTRL_IRQ`/`UART0_IRQ`/`ADC_IRQ_FIFO`/`PIO0_IRQ_0`/`DMA_IRQ_0`;
+construct + spawn LEDs (PioWs2812), encoder, expression (load calibration
+from `Storage` on boot), MIDI (USB composite + `BufferedUart`, mux loops in
+concrete wrapper tasks — embassy `#[task]`s can't be generic). Promote the
+router to multi-input via a `RouterIn` merge enum + small per-source
+forwarder tasks (one clean `receive().await` loop), holding app state
+(page index, per-button toggles).
+
+**Phase C — the router's brain (serial):** replace the stub press-counter
+with action dispatch (`on_press`/`on_long_press` → `MidiCmd`/SysEx/page-nav);
+page nav cycles pages + clears toggles; LED feedback builds an `LedFrame`
+from page colours (full vs `idle_dim` per toggle); incoming `MidiRx` CC
+syncs toggle state; grow `DisplayCmd` with page-mode variants (additive —
+keep the router match exhaustive).
+
+**Phase D — cross-cutting extract (once 2+ subsystems are wired):** lift the
+inline footswitch task → `hal/buttons.rs`, the router/app state → `app.rs`;
+the bin becomes thin wiring.
+
+**Key decisions (chosen):** router fan-in = `RouterIn` enum + forwarders;
+config v1 = baked-in Rust consts (no_std serde-TOML from flash is a later
+research item — don't let it block Phase C); USB stood up composite-capable
+(MidiClass now, room for CDC later).
+
+### Wave 3 — display modes / features (parallelisable on the integrated base)
+
+1. **Settings menu** (`remedy/lib/menu.py`) — encoder-driven; needs encoder
+   + display + storage. A display "mode."
+2. **Tuner** (`remedy/lib/tuner.py`) — big note glyph + cents needle; pitch
+   via MIDI. A display "mode," self-contained once MIDI-in exists.
+3. **Device sync** — Katana RQ1 on boot → toggle LED states. Needs MIDI +
    LEDs + config.
-5. **Webapp sync** (COBS+CRC16 over USB CDC). Later; rides the CDC class.
+4. **Webapp sync** — COBS+CRC16 over USB CDC. Rides the (already composite)
+   CDC class.
 
-### Suggested orchestration shape
-
-- **Wave 1 (parallel):** Storage, LEDs, Encoder, MIDI-engine — four
-  independent module sessions/subagents against the frozen channel
-  contracts. Each lands a `src/...` module + task + a tiny example or
-  unit of proof. None edits the bin.
-- **Wave 2 (serialise, you drive):** integrate Wave 1 tasks into the app
-  binary; build the config/page system (the router's real logic).
-- **Wave 3 (parallel again):** Settings menu, Tuner, Device sync — each a
-  display mode / feature on top of the integrated base.
-- **Cross-cutting:** promote the inline buttons/router/display tasks out
-  of `bin/` into `src/hal/` + `src/app.rs` once two+ subsystems are in
-  (don't pre-abstract — let it pull apart naturally).
-
-A note on cost: parallel subagents editing the *same* files conflict.
-Keep Wave-1 work in **new files** and the integration **serial**. Use
+A note on cost: parallel subagents editing the *same* files conflict. Keep
+new work in **new files** and integration **serial**. Use
 `isolation: "worktree"` for any agent that must touch shared files
 concurrently.
 
