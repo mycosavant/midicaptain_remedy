@@ -39,6 +39,7 @@ use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::prelude::*;
 use heapless::String;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
+use midicaptain_firmware::events::{ButtonEvent, DisplayCmd};
 use midicaptain_firmware::ui::{Palette, TextPanel, Widget};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -63,19 +64,9 @@ const POLL_MS: u64 = 5;
 /// perception.
 const SETTLE_SAMPLES: u8 = 3;
 
-/// A debounced footswitch edge.
-#[derive(Clone, Copy, defmt::Format)]
-struct ButtonEvent {
-    index: u8,
-    pressed: bool,
-}
-
-/// A render request to the display task.
-#[derive(Clone, Copy, defmt::Format)]
-enum DisplayCmd {
-    /// A switch was pressed; show its name and running press count.
-    Pressed { index: u8, count: u32 },
-}
+// `ButtonEvent` and `DisplayCmd` now live in the shared channel-contract
+// module (`midicaptain_firmware::events`) so parallel subsystem tasks code
+// against the same types. See `src/events.rs`.
 
 // Static channels live in `.bss`; `Channel::new()` is `const`. Senders and
 // receivers are cloneable handles with `'static` lifetime, safe to hand to

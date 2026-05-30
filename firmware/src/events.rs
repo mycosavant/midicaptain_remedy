@@ -1,0 +1,86 @@
+//! Channel contracts — the message types tasks exchange through
+//! `embassy_sync` channels.
+//!
+//! Freezing these in one place lets independent subsystem tasks (LEDs,
+//! MIDI, encoder, expression, …) be built in parallel against a stable
+//! interface, and lets the router match on a known set. **Adding** enum
+//! variants is backward-compatible as long as the router keeps a
+//! catch-all arm; **changing** existing fields is breaking — coordinate
+//! through the router owner.
+//!
+//! v0 scope: channel-voice MIDI plus per-switch / per-pedal intent.
+//! Streaming SysEx is intentionally NOT a `Copy` message here — it is
+//! owned and parsed inside the MIDI module (`src/midi/`), which exposes
+//! its own send/receive API for it. Revisit once the MIDI workstream
+//! lands and we know the buffering it needs (likely `heapless::Vec`).
+
+/// A debounced footswitch edge. `index` is `0..10` in the order the
+/// buttons task scans — see `SWITCH_NAMES` in `bin/midicaptain.rs`.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ButtonEvent {
+    pub index: u8,
+    pub pressed: bool,
+}
+
+/// Rotary-encoder motion. `Turn` carries a signed detent delta
+/// (`+1` = clockwise, `-1` = counter-clockwise); the decoder accumulates
+/// sub-detent quadrature internally and only emits whole detents.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum EncoderEvent {
+    Turn(i8),
+    Press,
+    Release,
+}
+
+/// A calibrated expression-pedal reading. `pedal` is `0` or `1`; `value`
+/// is `0..=127` after min/max calibration is applied.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct ExprEvent {
+    pub pedal: u8,
+    pub value: u8,
+}
+
+/// Normalised inbound MIDI, merged from USB-MIDI and the DIN UART.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum MidiRx {
+    ControlChange { channel: u8, cc: u8, value: u8 },
+    ProgramChange { channel: u8, program: u8 },
+    Note { channel: u8, note: u8, velocity: u8, on: bool },
+}
+
+/// Outbound MIDI command, fanned to USB + DIN by the mux task. SysEx
+/// transmission is a separate API on the MIDI module, not a `Copy` here.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum MidiCmd {
+    ControlChange { channel: u8, cc: u8, value: u8 },
+    ProgramChange { channel: u8, program: u8 },
+    Note { channel: u8, note: u8, velocity: u8, on: bool },
+}
+
+/// Per-switch RGB intent. The LEDs task expands each entry across that
+/// switch's three physical WS2812 pixels (see `pins::LED_RANGES`).
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct LedColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// A full LED frame: one colour per footswitch, in `pins::Switch::ALL`
+/// order (10 entries). The LEDs task is the only owner of the WS2812
+/// chain; it maps this to the 30-pixel buffer.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct LedFrame {
+    pub switches: [LedColor; 10],
+}
+
+/// A render request to the display task. Grows into modes (status, tuner,
+/// menu, value bar) as features land — add variants, keep the router's
+/// match exhaustive.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum DisplayCmd {
+    /// A switch was pressed; show its name and running press count.
+    /// (Placeholder behaviour from the skeleton; real action dispatch
+    /// replaces this when the config/page system lands.)
+    Pressed { index: u8, count: u32 },
+}
