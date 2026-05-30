@@ -11,5 +11,7 @@
 #![no_std]
 
 pub mod display;
+pub mod events;
+pub mod hal;
 pub mod pins;
 pub mod ui;
