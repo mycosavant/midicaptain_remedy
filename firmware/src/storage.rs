@@ -115,10 +115,15 @@ pub struct PedalCal {
 }
 
 impl PedalCal {
-    /// Uncalibrated default: the full 16-bit ADC span, i.e. an identity
-    /// mapping until the user runs the calibration wizard. (`max == 0xFFFF`
-    /// was the CP firmware's blank-NVM sentinel; here it is simply the
-    /// honest "whole range" default.)
+    /// Uncalibrated default. The store is calibration-width-agnostic — it
+    /// just round-trips two `u16`s — so this uses the `0xFFFF` blank-NVM
+    /// sentinel the CP firmware used. When fed to
+    /// [`crate::hal::expression::PedalProcessor::set_calibration`], the
+    /// RP2040 ADC's 12-bit ceiling clamps `max` to
+    /// [`crate::hal::expression::ADC_FULL_SCALE`] (4095), yielding exactly
+    /// the full-span identity mapping that module's own
+    /// `Calibration::DEFAULT` defines. (The two defaults therefore agree
+    /// after the clamp — do not "fix" one to match the other's literal.)
     pub const DEFAULT: Self = Self {
         min: 0,
         max: u16::MAX,

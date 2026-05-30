@@ -56,6 +56,8 @@
 use embassy_futures::select::{select3, Either3};
 use embassy_rp::gpio::{Input, Pin, Pull};
 use embassy_rp::Peri;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::events::EncoderEvent;
@@ -235,5 +237,36 @@ impl<'d> Encoder<'d> {
         } else {
             EncoderEvent::Release
         })
+    }
+}
+
+// ── Channel aliases + task ─────────────────────────────────────────────
+// Mirrors the `expression`/`leds` modules: the app owns a `static
+// EncoderChannel`, hands the receiver to the router and the sender to the
+// task.
+
+/// Depth of the [`EncoderEvent`] channel between the task and the router.
+/// Detents/presses are low-rate human input; 8 absorbs a fast spin without
+/// the task ever back-pressuring (it would just park on the next edge).
+pub const ENCODER_QUEUE_DEPTH: usize = 8;
+
+/// Bounded MPSC channel carrying [`EncoderEvent`]s to the router.
+pub type EncoderChannel = Channel<CriticalSectionRawMutex, EncoderEvent, ENCODER_QUEUE_DEPTH>;
+/// Sender half — held by [`encoder_task`].
+pub type EncoderSender = Sender<'static, CriticalSectionRawMutex, EncoderEvent, ENCODER_QUEUE_DEPTH>;
+/// Receiver half — held by the router.
+pub type EncoderReceiver = Receiver<'static, CriticalSectionRawMutex, EncoderEvent, ENCODER_QUEUE_DEPTH>;
+
+/// Drive an [`Encoder`] forever, forwarding every event to the router.
+///
+/// `next_event` already swallows sub-detent quadrature and button bounce,
+/// so every value sent here is a real, user-visible event. Block-the-
+/// producer on send: encoder events are navigation/menu *intent* we don't
+/// want to drop, and the queue depth makes blocking safe.
+#[embassy_executor::task]
+pub async fn encoder_task(mut encoder: Encoder<'static>, sender: EncoderSender) {
+    loop {
+        let ev = encoder.next_event().await;
+        sender.send(ev).await;
     }
 }
