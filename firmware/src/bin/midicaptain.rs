@@ -27,7 +27,7 @@
 
 use core::fmt::Write as _;
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_rp::adc::{Adc, Config as AdcConfig, InterruptHandler as AdcIrq};
 use embassy_rp::bind_interrupts;
@@ -89,18 +89,52 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // ── Display (sole owner of SPI1 + the ST7789) ──────────────────────
-    let (disp, backlight) = display::init(DisplayPeripherals {
+    // Bring the screen up and spawn its task FIRST, before the slower init
+    // (storage, USB, …). The panel then shows "booting…" immediately, so any
+    // later hang is visible on-screen instead of leaving it black. A display
+    // failure is non-fatal: log it and run headless — MIDI, LEDs and the
+    // footswitches don't depend on the screen, so a dead panel (e.g. a loose
+    // flex cable) must not brick the controller.
+    match display::init(DisplayPeripherals {
         spi: p.SPI1,
         clk: p.PIN_14,
         mosi: p.PIN_15,
         cs: p.PIN_13,
         dc: p.PIN_12,
         backlight: p.PIN_8,
-    })
-    .expect("display init");
+    }) {
+        Ok((disp, backlight)) => {
+            spawner.spawn(display_task(disp, backlight, DISPLAY_CH.receiver()).unwrap());
+        }
+        Err(e) => warn!("display init failed ({:?}); running headless", e),
+    }
+
+    // ── Footswitches: active-LOW with internal pull-ups. Created here (not
+    // at spawn time) so a boot-time recovery combo can be read before
+    // settings load. Order defines each switch's `ButtonEvent.index` →
+    // `config::SWITCH_FOR_BUTTON` LED mapping. ───────────────────────────
+    let footswitches: [Input<'static>; buttons::COUNT] = [
+        Input::new(p.PIN_1, Pull::Up),  // SW1
+        Input::new(p.PIN_25, Pull::Up), // SW2
+        Input::new(p.PIN_24, Pull::Up), // SW3
+        Input::new(p.PIN_23, Pull::Up), // SW4
+        Input::new(p.PIN_9, Pull::Up),  // A
+        Input::new(p.PIN_10, Pull::Up), // B
+        Input::new(p.PIN_11, Pull::Up), // C
+        Input::new(p.PIN_18, Pull::Up), // D
+        Input::new(p.PIN_20, Pull::Up), // UP   (index 8)
+        Input::new(p.PIN_19, Pull::Up), // DOWN (index 9)
+    ];
 
     // ── Storage: load persisted settings (defaults on a blank device) ──
     let mut storage = Storage::new(p.FLASH);
+    // Recovery hatch: hold UP+DOWN during power-on to wipe persisted settings
+    // back to factory defaults (e.g. to clear a bad MIDI channel or pedal
+    // calibration). Checked before load so the wipe takes effect this boot.
+    if footswitches[8].is_low() && footswitches[9].is_low() {
+        warn!("factory reset: UP+DOWN held at boot — erasing settings");
+        let _ = storage.factory_reset().await;
+    }
     let settings = storage.load().await;
     info!("settings: {}", settings);
     // 1-based menu channel → 0-based wire channel for the codec.
@@ -172,25 +206,11 @@ async fn main(spawner: Spawner) {
     spawner.spawn(din_in_task(din_rx).unwrap());
     spawner.spawn(out_task(usb_tx, din_tx).unwrap());
 
-    // ── Footswitches: active-LOW with internal pull-ups. Order here is the
-    // `ButtonEvent.index` → `config::SWITCH_FOR_BUTTON` mapping. ──────────
-    let footswitches: [Input<'static>; buttons::COUNT] = [
-        Input::new(p.PIN_1, Pull::Up),  // SW1
-        Input::new(p.PIN_25, Pull::Up), // SW2
-        Input::new(p.PIN_24, Pull::Up), // SW3
-        Input::new(p.PIN_23, Pull::Up), // SW4
-        Input::new(p.PIN_9, Pull::Up),  // A
-        Input::new(p.PIN_10, Pull::Up), // B
-        Input::new(p.PIN_11, Pull::Up), // C
-        Input::new(p.PIN_18, Pull::Up), // D
-        Input::new(p.PIN_20, Pull::Up), // UP
-        Input::new(p.PIN_19, Pull::Up), // DOWN
-    ];
+    // ── Footswitch scanner (array created above, for the boot recovery combo) ──
     spawner.spawn(buttons::buttons_task(footswitches, BUTTON_CH.sender()).unwrap());
 
-    // ── Display task + router ──────────────────────────────────────────
-    spawner.spawn(display_task(disp, backlight, DISPLAY_CH.receiver()).unwrap());
-
+    // ── Router (last: it depends on settings loaded above, and paints the
+    // first page over the display task's "booting…" splash) ──────────────
     let router = Router::new(
         DEFAULT_CONFIG,
         wire_channel,
