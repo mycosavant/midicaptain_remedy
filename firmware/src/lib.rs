@@ -1,12 +1,13 @@
 //! MIDI Captain Remedy — Rust + Embassy firmware library.
 //!
-//! This crate is the shared layer for the example binaries in `examples/`.
-//! As the port matures it will grow modules for the event dispatcher,
-//! config loader, display driver, MIDI multiplexer, etc. For now it just
-//! pins down the board's GPIO map so every example refers to the same
-//! constants.
+//! Shared layer for the application binary (`src/bin/midicaptain.rs`) and
+//! the bring-up examples in `examples/`. It holds the board pin map
+//! ([`pins`]), the frozen channel contracts every task codes against
+//! ([`events`]), the ST7789 driver + UI scene graph ([`display`], [`ui`]),
+//! the hardware-abstraction tasks ([`hal`]), the MIDI engine ([`midi`]),
+//! and the flash settings store ([`storage`]).
 //!
-//! See `ARCHITECTURE.md` for the task graph and the planned module layout.
+//! See `ARCHITECTURE.md` for the task graph and module layout.
 
 #![no_std]
 

@@ -1,9 +1,15 @@
 # MIDICaptain Remedy — Rust + Embassy firmware
 
-Rust port of the MIDI Captain firmware. **Status: bootstrap PoC.** Three
-working example binaries exercise the WS2812 chain, the USB CDC port, and
-both MIDI transports (USB-MIDI + DIN UART). The full app — pages,
-display, settings, Katana SysEx — lands in follow-up sessions.
+Rust port of the MIDI Captain firmware. **Status: subsystems built,
+integration next (end of Wave 1).** The ST7789 display is
+hardware-validated, and every input/output subsystem now exists as a
+self-contained module with a proof example: HAL tasks (encoder,
+expression pedals, WS2812 LEDs), the MIDI engine (USB+DIN mux, streaming
+SysEx, BOSS Katana/Roland builders), and a flash-backed settings store.
+The application binary (`src/bin/midicaptain.rs`) currently runs a
+buttons→router→display skeleton; **Wave 2 wires the landed modules into
+the router** and builds the config/page action system. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and [`HANDOFF.md`](HANDOFF.md).
 
 This crate lives alongside the existing CircuitPython firmware in
 [`../remedy/`](../remedy/). That code is the **behavioural reference**
@@ -30,11 +36,18 @@ Build:
 
 ```powershell
 # from this directory
-cargo build --examples              # dev build (small)
-cargo build --examples --release    # production build
+cargo build --bins --examples              # dev build (app binary + examples)
+cargo build --bins --examples --release    # production build
 ```
 
-Flash a particular example — see below for the two paths.
+The green gate (run before pushing) is both of:
+
+```powershell
+cargo build  --release --bins --examples
+cargo clippy --release --bins --examples -- -D warnings
+```
+
+Flash the app binary or a particular example — see below for the two paths.
 
 ## Flashing
 
@@ -48,6 +61,7 @@ This is the active default runner (`elf2uf2-rs -d` in
 2. From this directory, run:
 
    ```powershell
+   cargo run --release --bin midicaptain     # the application firmware
    cargo run --release --example blink
    cargo run --release --example serial_echo
    cargo run --release --example midi_passthrough
@@ -92,11 +106,22 @@ cargo run --release --example blink
 
 ## Examples
 
+Bring-up / transport sanity checks and per-module proof binaries. Keep
+features *out* of these — they exercise one module each; real behaviour
+lives under `src/`.
+
 | Example | What it proves |
 |---|---|
 | `blink` | Chip + Embassy executor alive, PIO+DMA WS2812 driver works on GP7. Lights LED 0 of the chain through red → green → blue at ~3 Hz. |
 | `serial_echo` | USB CDC ACM device on VID 0x2E8A (RP2040 standard), composite-friendly descriptors, echoes bytes, handles the 1200-baud BOOTSEL touch. |
-| `midi_passthrough` | USB-MIDI device + DIN UART at 31250 baud, bidirectional bridge between them. Channel-voice messages only (no SysEx) in the PoC. |
+| `midi_passthrough` | USB-MIDI device + DIN UART at 31250 baud, bidirectional bridge between them. Channel-voice messages only (no SysEx) — superseded by `midi_engine_test` for the real engine. |
+| `display_splash` | Brings up the ST7789 (mipidsi 0.10, `Deg0`+offset(0,0), colour inversion ON) and renders the Remedy splash. **Hardware-validated.** |
+| `display_widgets` | Animates `ValueBar` + `TextPanel`, logging dirty-flag gating (SPI quiet when nothing changed). |
+| `encoder_test` | Logs `EncoderEvent`s: detented turns, velocity acceleration, debounced push. |
+| `expression_test` | Logs `ExprEvent`s from both ADC pedals (GP27/GP28) with smoothing + calibration mapping. |
+| `leds_test` | Cycles `LedFrame`s through the 30-pixel chain via the LED task (keeps every channel ≤ 32). |
+| `storage_test` | Writes a distinctive value to every setting, reads it back through real flash, asserts the round-trip (and persistence across reboots). |
+| `midi_engine_test` | Byte-exact codec self-test (Katana DT1/RQ1, Roland checksum, SysEx USB round-trip, running-status decode) vs the CircuitPython reference, then runs the live mux. |
 
 ## Logging
 
@@ -113,16 +138,23 @@ cargo run --release --example blink
 
 ## What's verified
 
-- `cargo build --examples --release` → clean (3 ELFs produced).
-- `cargo clippy --examples -- -D warnings` → clean.
-- **Not** tested on hardware yet (no device available this session).
-  Reports of successful flashing welcome.
+- `cargo build --release --bins --examples` → clean (app binary + all examples).
+- `cargo clippy --release --bins --examples -- -D warnings` → clean.
+- **ST7789 display: hardware-validated** on real silicon (Pi Debug Probe):
+  splash + widgets render upright, centred, flicker-free.
+- MIDI codec: `midi_engine_test`'s self-test asserts byte-exactness against
+  vectors from the CircuitPython reference (`remedy/lib/midi.py`).
+- The other landed modules (encoder, expression, LEDs, storage) build clean
+  and ship a proof example each; **on-hardware bring-up of those, and of the
+  app binary's channel pipeline, is still pending** a probe session.
 
 ## What's next
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the planned module roll-out.
-Best next focus is the display driver, since it's the visible feedback
-layer everyone notices first.
+**Wave 2 — integration (serial):** wire the landed HAL + MIDI modules into
+the router in `src/bin/midicaptain.rs`, then build the config/page action
+system (what each button does per page). See [`HANDOFF.md`](HANDOFF.md) for
+the dependency map and the parallel/serial split, and
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the task graph.
 
 ## Repo conventions
 
@@ -142,8 +174,11 @@ As of May 2026:
 | `embassy-usb` | 0.6 | Has both `cdc_acm` and `midi` classes |
 | `embassy-time` | 0.5 | Tick driver via embassy-rp |
 | `embassy-sync` | 0.8 | Bounded channels & mutexes |
-| `mipidsi` | (not yet) | ST7789 driver lands with display session |
-| `sequential-storage` | (not yet) | Flash KV lands with config session |
+| `embassy-usb` (driver) | 0.6 / 0.2 | USB-MIDI + CDC classes |
+| `mipidsi` | 0.10 | ST7789 driver (hardware-validated) |
+| `embedded-graphics` | 0.8 | Primitives + built-in mono fonts |
+| `sequential-storage` | 7.2 | Flash KV settings store (`src/storage.rs`) |
+| `smart-leds` | 0.4 | WS2812 colour type (PIO driver via embassy-rp) |
 | `defmt` | 1.0 | Stable release |
 
 `portable-atomic` is pulled in with the `critical-section` feature so

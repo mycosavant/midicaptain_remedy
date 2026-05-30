@@ -6,9 +6,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "Rust + Embassy firmware port for the Paint Audio MIDI Captain (RP2040)."
 
-# Library crate that exposes the typed pin map. The example binaries in
-# examples/ are the runnable artifacts during PoC stage; a top-level
-# application binary lands in a follow-up session.
+# Library crate shared by the application binary (src/bin/midicaptain.rs)
+# and the bring-up examples in examples/. Exposes the pin map, channel
+# contracts, display/UI, HAL tasks, MIDI engine, and flash settings store.
 [lib]
 name = "midicaptain_firmware"
 

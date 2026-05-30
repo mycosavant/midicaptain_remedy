@@ -10,7 +10,17 @@ router. This file hands you the map to start from.
 
 Read `ARCHITECTURE.md` (task graph + channel rules) alongside this.
 
-## Where things stand (all on PR #6, base `SAFE_main`)
+## Where things stand (Wave 1 merged to `SAFE_main` @ `d7c626a`)
+
+**Wave 1 is complete in module form** (PRs #6–#11, all merged to
+`SAFE_main`). The channel contract `src/events.rs` is frozen and on
+`SAFE_main`; the orchestration hiccup where it briefly missed the branch
+has been fully reconciled (single definition per type, green gate clean).
+Landed since the original handoff: the `events` contract, the HAL tasks
+(`hal/{encoder,expression,leds}`), the MIDI engine
+(`midi/{mux,sysex,katana}`), and the flash settings store (`storage`) —
+each with a proof example. **None of these are wired into the router yet**
+— that's Wave 2 (below).
 
 **Hardware-validated on real silicon** (Pi Debug Probe + probe-rs):
 - ST7789 display: geometry (`Deg0` + `display_offset(0,0)`), colour
