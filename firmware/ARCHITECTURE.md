@@ -33,8 +33,9 @@ firmware/
 ├── rust-toolchain.toml     ← pins stable + thumbv6m-none-eabi
 ├── .cargo/config.toml      ← dual runner (UF2 default, probe-rs alt)
 ├── src/
-│   ├── lib.rs              ← `pub mod pins, display, ui`
+│   ├── lib.rs              ← `pub mod pins, events, display, ui, hal, midi, storage`
 │   ├── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
+│   ├── events.rs           ← frozen channel contracts (Button/Encoder/Expr/MidiRx/MidiCmd/LedFrame/DisplayCmd)
 │   ├── display.rs          ← ST7789 driver wrapper (mipidsi 0.10 + embedded-graphics)
 │   ├── ui/                 ← dirty-flag scene graph atop display.rs
 │   │   ├── mod.rs          ← Widget trait, Palette/Color re-exports
@@ -42,52 +43,59 @@ firmware/
 │   │   ├── element.rs      ← Widget trait (render → bool, mark_dirty)
 │   │   ├── value_bar.rs    ← 0..127 horizontal bar widget (delta-paint, no flicker)
 │   │   └── text_panel.rs   ← bordered multi-line text widget (heapless::String)
+│   ├── hal/                ← HAL tasks: each owns a peripheral, emits events
+│   │   ├── mod.rs          ← module re-exports (buttons still inline in bin, see below)
+│   │   ├── encoder.rs      ← IRQ-driven quadrature + accel + debounced push → EncoderEvent
+│   │   ├── expression.rs   ← async-ADC pedals (GP27/28) + calibration → ExprEvent
+│   │   └── leds.rs         ← LedFrame → 30-px WS2812 chain on GP7 (PIO0+DMA)
+│   ├── midi/               ← MIDI engine (single owner of USB-MIDI + DIN UART0)
+│   │   ├── mod.rs          ← re-exports
+│   │   ├── mux.rs          ← USB+DIN merge → MidiRx; MidiCmd → both transports
+│   │   ├── sysex.rs        ← streaming SysEx (de)framing across USB-MIDI CINs
+│   │   └── katana.rs       ← Roland checksum + DT1/RQ1 + Katana builders (port of remedy/lib/midi.py)
+│   ├── storage.rs          ← flash KV settings store (sequential-storage over embassy_rp::flash)
 │   └── bin/
 │       └── midicaptain.rs  ← application binary: buttons → router → display slice
-├── examples/               ← runnable transport / bring-up tests
+├── examples/               ← runnable transport / bring-up + per-module proof tests
 │   ├── blink.rs
 │   ├── serial_echo.rs
 │   ├── midi_passthrough.rs
 │   ├── display_splash.rs   ← bring up ST7789, render Remedy splash
-│   └── display_widgets.rs  ← animate ValueBar + TextPanel, log dirty-flag gating
+│   ├── display_widgets.rs  ← animate ValueBar + TextPanel, log dirty-flag gating
+│   ├── encoder_test.rs     ← log EncoderEvents (turns + accel + push)
+│   ├── expression_test.rs  ← log ExprEvents from both pedals
+│   ├── leds_test.rs        ← cycle LedFrames (channels ≤ 32)
+│   ├── storage_test.rs     ← write/read-back every setting through real flash
+│   └── midi_engine_test.rs ← byte-exact codec self-test vs CP reference + live mux
 ├── README.md               ← build/flash quickstart
 ├── ARCHITECTURE.md         ← this file
 └── HARDWARE.md             ← pin map, SWD pads (VERIFIED), geometry/colour notes
 ```
 
 The ST7789 path is **hardware-validated** (geometry `Deg0`+offset(0,0),
-colour inversion ON, SWD flashing via Pi Debug Probe). The application
-binary is the live integration point — every subsystem below joins it as
-another task feeding the router.
+colour inversion ON, SWD flashing via Pi Debug Probe). All Wave-1 modules
+above (`events`, `hal/*`, `midi/*`, `storage`) have **landed and pass the
+green gate**, each with a proof example — but they are **not yet wired into
+the router**: `bin/midicaptain.rs` still runs only the
+buttons→router→display skeleton. Connecting them is Wave 2 (see below). The
+application binary remains the live integration point — every subsystem
+joins it as another task feeding the router.
 
-Future modules (rough plan, lands one per follow-up session):
+Still to land:
 
 ```
 src/
-├── lib.rs
-├── pins.rs                 ← (today)
-├── display.rs              ← (today — driver)
-├── ui/                     ← (today — Widget trait, palette, ValueBar, TextPanel)
-├── hal/                    ← thin wrappers over embassy-rp peripherals
-│   ├── buttons.rs          ← debounced edge detector → Channel<ButtonEvent>
-│   ├── encoder.rs          ← quadrature decoder → Channel<EncoderEvent>
-│   ├── leds.rs             ← per-switch RGB state → driven WS2812 frames
-│   └── expression.rs       ← ADC + calibration → Channel<ExprEvent>
-├── midi/
-│   ├── mux.rs              ← USB + DIN combined I/O
-│   ├── sysex.rs            ← parse / build streaming SysEx
-│   └── katana.rs           ← Roland model-ID + helpers (port from remedy/lib/midi.py)
-├── config/                 ← serde-toml load from flash KV, or binary fmt
-├── storage/                ← sequential-storage over embassy_rp::flash
-├── sync/                   ← COBS+CRC16 wire protocol for webapp sync
-├── app.rs                  ← extract router/state machine out of bin/ as it grows
-└── bin/
-    └── midicaptain.rs      ← (today — buttons→router→display skeleton)
+├── hal/buttons.rs          ← lift the inline footswitch debouncer out of bin/ (→ ButtonEvent)
+├── config/                 ← per-button/per-page action table (CC/PC/SysEx/page-nav); serde-toml from flash KV
+├── sync/                   ← COBS+CRC16 wire protocol for webapp sync (USB CDC)
+└── app.rs                  ← extract the router/state machine out of bin/ once it grows
 ```
 
 Today the buttons/router/display tasks live inline in
-`bin/midicaptain.rs`. As they grow, lift the HAL tasks into `src/hal/*`
-and the router into `src/app.rs`; the bin becomes thin wiring.
+`bin/midicaptain.rs`. As Wave-2 integration grows the router, lift the
+inline footswitch task into `src/hal/buttons.rs` and the router into
+`src/app.rs`; the bin becomes thin wiring. (Storage deliberately shipped as
+a direct async accessor, not a task — see the task-graph note below.)
 
 ## Task graph (target)
 
@@ -136,9 +144,18 @@ Concretely:
 | `router` | Any input channel msg | `MidiCmd`, `DisplayCmd`, `LedFrame` | All event channels |
 | `display` | `DisplayCmd` or 30 Hz ticker | SPI frames to ST7789 | `DisplayCmd` |
 | `leds` | `LedFrame` | WS2812 DMA writes | `LedFrame` |
-| `storage` | settings save/load requests | KV blobs | `StorageReq` |
 
 Channel capacities are 8–16 in the PoC; tune per real-world load.
+
+**Storage is not a task.** `src/storage.rs` shipped as a plain async
+accessor (`Storage::load`/`store`), *not* a channel-driven task — the
+settings store is touched only at infrequent boot-load / menu-save points,
+so a dedicated task + `StorageReq` channel would be ceremony with no
+back-pressure to manage. Callers (the boot path, the settings menu, the
+expression-calibration save) `await` it directly. It owns the `FLASH`
+peripheral; its blocking→async shim keeps it off the DMA subsystem
+entirely. (Revisit only if a future caller needs concurrent access while a
+multi-sector erase is in flight.)
 
 ## Channel design rules
 
@@ -180,9 +197,11 @@ exist, here's why these:
   font parity with the OEM PTSans set is deliberately out of scope for
   v1 — using `mono_font::ascii::FONT_10X20` until the UI layer
   stabilises and font fidelity becomes worth the effort.
-- **sequential-storage** for flash KV (planned): purpose-built for
-  flash wear-leveling. Replaces the CP NVM hack for expression pedal
-  calibration; same store can hold all settings.
+- **sequential-storage** for flash KV (landed — see `src/storage.rs`):
+  purpose-built for flash wear-leveling. Replaces the CP NVM hack for
+  expression pedal calibration; the same store holds all settings (MIDI
+  channel, brightnesses, both pedal calibrations). A 64 KB region at the
+  top of flash, kept disjoint from the firmware image by `memory.x`.
 
 Notably absent: **no USB MSC**. This is intentional. The whole point of
 the rewrite is that the device owns its flash exclusively — no host /
@@ -208,9 +227,11 @@ protocol (next-but-one session) rides on USB CDC instead.
   apply for a real PID (or use a sub-VID partner range).
 - **Channel capacities (8 / 16).** Educated guess. Instrument with
   `defmt` once on hardware and adjust.
-- **No SysEx in `midi_passthrough` PoC.** Real implementation must
-  handle SysEx fragmentation across USB-MIDI 4-byte packets (CIN
-  0x4/0x5/0x6/0x7). Owns the next-session MIDI mux task.
+- **SysEx fragmentation — handled (landed).** The `midi_passthrough` PoC
+  was channel-voice only; the real engine (`src/midi/{mux,sysex}.rs`) now
+  reassembles SysEx across USB-MIDI 4-byte packets (CIN 0x4/0x5/0x6/0x7)
+  and the DIN byte stream, and packetises outbound SysEx byte-exact with
+  the DIN stream. `midi_engine_test.rs` proves the round-trip.
 
 ## Read this if you're starting the next session
 
