@@ -33,16 +33,32 @@ firmware/
 ├── rust-toolchain.toml     ← pins stable + thumbv6m-none-eabi
 ├── .cargo/config.toml      ← dual runner (UF2 default, probe-rs alt)
 ├── src/
-│   ├── lib.rs              ← `pub mod pins`
-│   └── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
-├── examples/               ← runnable PoC binaries (this session)
+│   ├── lib.rs              ← `pub mod pins, display, ui`
+│   ├── pins.rs             ← board pin map (GPIO numbers, NeoPixel chain order, USB IDs)
+│   ├── display.rs          ← ST7789 driver wrapper (mipidsi 0.10 + embedded-graphics)
+│   ├── ui/                 ← dirty-flag scene graph atop display.rs
+│   │   ├── mod.rs          ← Widget trait, Palette/Color re-exports
+│   │   ├── palette.rs      ← eager const Rgb565 palette (dim/dark = const fn)
+│   │   ├── element.rs      ← Widget trait (render → bool, mark_dirty)
+│   │   ├── value_bar.rs    ← 0..127 horizontal bar widget (delta-paint, no flicker)
+│   │   └── text_panel.rs   ← bordered multi-line text widget (heapless::String)
+│   └── bin/
+│       └── midicaptain.rs  ← application binary: buttons → router → display slice
+├── examples/               ← runnable transport / bring-up tests
 │   ├── blink.rs
 │   ├── serial_echo.rs
-│   └── midi_passthrough.rs
+│   ├── midi_passthrough.rs
+│   ├── display_splash.rs   ← bring up ST7789, render Remedy splash
+│   └── display_widgets.rs  ← animate ValueBar + TextPanel, log dirty-flag gating
 ├── README.md               ← build/flash quickstart
 ├── ARCHITECTURE.md         ← this file
-└── HARDWARE.md             ← pin map, SWD pad location (TBD)
+└── HARDWARE.md             ← pin map, SWD pads (VERIFIED), geometry/colour notes
 ```
+
+The ST7789 path is **hardware-validated** (geometry `Deg0`+offset(0,0),
+colour inversion ON, SWD flashing via Pi Debug Probe). The application
+binary is the live integration point — every subsystem below joins it as
+another task feeding the router.
 
 Future modules (rough plan, lands one per follow-up session):
 
@@ -50,6 +66,8 @@ Future modules (rough plan, lands one per follow-up session):
 src/
 ├── lib.rs
 ├── pins.rs                 ← (today)
+├── display.rs              ← (today — driver)
+├── ui/                     ← (today — Widget trait, palette, ValueBar, TextPanel)
 ├── hal/                    ← thin wrappers over embassy-rp peripherals
 │   ├── buttons.rs          ← debounced edge detector → Channel<ButtonEvent>
 │   ├── encoder.rs          ← quadrature decoder → Channel<EncoderEvent>
@@ -59,14 +77,17 @@ src/
 │   ├── mux.rs              ← USB + DIN combined I/O
 │   ├── sysex.rs            ← parse / build streaming SysEx
 │   └── katana.rs           ← Roland model-ID + helpers (port from remedy/lib/midi.py)
-├── display/                ← mipidsi + embedded-graphics scene graph
 ├── config/                 ← serde-toml load from flash KV, or binary fmt
 ├── storage/                ← sequential-storage over embassy_rp::flash
 ├── sync/                   ← COBS+CRC16 wire protocol for webapp sync
-├── app.rs                  ← top-level state machine wiring tasks
+├── app.rs                  ← extract router/state machine out of bin/ as it grows
 └── bin/
-    └── midicaptain.rs      ← application binary (replaces examples/)
+    └── midicaptain.rs      ← (today — buttons→router→display skeleton)
 ```
+
+Today the buttons/router/display tasks live inline in
+`bin/midicaptain.rs`. As they grow, lift the HAL tasks into `src/hal/*`
+and the router into `src/app.rs`; the bin becomes thin wiring.
 
 ## Task graph (target)
 
@@ -147,8 +168,18 @@ exist, here's why these:
 - **smart-leds** (used implicitly via PIO WS2812 driver): standard color
   type. The PIO program ships in embassy-rp under
   `pio_programs::ws2812`.
-- **mipidsi** for the ST7789 (planned, not in this PoC): widely adopted,
-  works with `embedded-graphics`, supports the 180° rotation we need.
+- **mipidsi 0.10** for the ST7789 (now wired up — see `src/display.rs`):
+  widely adopted, works with `embedded-graphics`, supports the 180°
+  rotation and 80-row offset we need. Ships its own
+  `interface::SpiInterface` — no separate `display-interface-spi`
+  crate (that was the 0.7/0.8 pattern).
+- **embedded-hal-bus** for `ExclusiveDevice`: wraps embassy-rp's
+  blocking `Spi` (an `SpiBus`) into the `SpiDevice` that mipidsi's
+  interface wants.
+- **embedded-graphics 0.8** for primitives + built-in mono fonts. PCF
+  font parity with the OEM PTSans set is deliberately out of scope for
+  v1 — using `mono_font::ascii::FONT_10X20` until the UI layer
+  stabilises and font fidelity becomes worth the effort.
 - **sequential-storage** for flash KV (planned): purpose-built for
   flash wear-leveling. Replaces the CP NVM hack for expression pedal
   calibration; same store can hold all settings.
@@ -160,9 +191,12 @@ protocol (next-but-one session) rides on USB CDC instead.
 
 ## Decisions that may need revisiting
 
-- **Examples-only library crate.** Today there's no `src/bin/main.rs`.
-  The first non-PoC session should add `src/bin/midicaptain.rs` (the
-  real application) and demote the examples to "transport tests."
+- **Application binary has landed.** `src/bin/midicaptain.rs` exists
+  (buttons→router→display skeleton); the examples are now transport /
+  bring-up tests. CI-equivalent check is
+  `cargo build --release --bins --examples` and
+  `cargo clippy --release --bins --examples -- -D warnings` (note
+  `--bins`, added when the binary landed).
 - **All-defmt logging, no panic redirect.** If we never get a probe,
   defmt-rtt is just bytes shouted into the void during UF2 boot. The
   USB CDC logger task is a reasonable backup; bring it in only when

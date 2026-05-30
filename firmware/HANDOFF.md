@@ -1,279 +1,151 @@
-# Handoff — next session: display driver
+# Handoff — next session: ORCHESTRATION + full-scope planning
 
-You're picking up the Rust + Embassy port one session in. Read this top
-to bottom before touching anything; it's calibrated to save you a
-half-hour of rediscovery.
+This handoff is different from the previous ones. The display stack is
+hardware-validated and the application skeleton exists, so the port has
+crossed from "prove the toolchain" into "build out subsystems." The next
+session's job is **planning and orchestration**: lay out the remaining
+trajectory, then drive it — parallel subagents / parallel sessions for
+genuinely independent subsystems, serialised integration for the shared
+router. This file hands you the map to start from.
 
-## TL;DR
+Read `ARCHITECTURE.md` (task graph + channel rules) alongside this.
 
-- Branch: `rust-embassy-port` (off `SAFE_main`). Two commits land the
-  bootstrap PoC. **Don't open or merge a PR against `main`** — the
-  owner keeps this branch off main until the port can fully replace
-  the CP firmware.
-- `firmware/` builds clean (`cargo build --examples --release` and
-  `cargo clippy --examples -- -D warnings`).
-- Three example binaries work as compiled artifacts; **none have been
-  flashed to hardware yet** (no device available last session). First
-  thing you do on real hardware: flash `examples/blink` to confirm
-  the WS2812 chain and PIO+DMA path. If that lights up LED 0 in
-  red→green→blue, the chip and Embassy executor are healthy.
-- Your job: stand up the ST7789 240×240 display.
+## Where things stand (all on PR #6, base `SAFE_main`)
 
-## State of the codebase
+**Hardware-validated on real silicon** (Pi Debug Probe + probe-rs):
+- ST7789 display: geometry (`Deg0` + `display_offset(0,0)`), colour
+  inversion ON (`ColorInversion::Inverted`), 24 MHz SPI. Splash + widgets
+  render correctly, upright, centred, smooth.
+- SWD debug access: 3-pad bottom-side header (square=SWCLK, mid=GND,
+  far=SWDIO) — see `HARDWARE.md`. `probe-rs run` flashes + streams RTT.
+- UI scene graph: `Widget` trait, const `Palette`, `ValueBar`
+  (delta-paint, no flicker), `TextPanel`. Dirty-flag gating proven via
+  `examples/display_widgets.rs`.
+- **Application skeleton**: `src/bin/midicaptain.rs` —
+  buttons → router → display over `embassy_sync` channels. Compiles
+  clean; **not yet flashed** (built right before this handoff).
 
-```
-firmware/
-├── Cargo.toml                  embassy 0.10 / usb 0.6 / time 0.5 pinned
-├── Cargo.lock                  ← committed (binary crate convention)
-├── memory.x                    RP2040 boot2 + flash + RAM
-├── build.rs                    stages memory.x, links cortex-m-rt / boot2 / defmt
-├── rust-toolchain.toml         stable + thumbv6m-none-eabi
-├── .cargo/config.toml          DUAL RUNNER (UF2 default; probe-rs commented)
-├── .gitignore                  target/
-├── src/
-│   ├── lib.rs                  re-exports pins
-│   └── pins.rs                 typed board map; USB VID 0x2E8A
-├── examples/
-│   ├── blink.rs                WS2812 PIO/DMA on GP7
-│   ├── serial_echo.rs          USB CDC + 1200-baud BOOTSEL trigger
-│   └── midi_passthrough.rs     USB-MIDI ↔ DIN UART bridge
-├── README.md                   build/flash quickstart
-├── ARCHITECTURE.md             task graph, channel design, crate rationale
-├── HARDWARE.md                 pin map; "SWD pad location: TBD"
-└── HANDOFF.md                  ← you are here
-```
+**Toolchain reality:**
+- Build anywhere; **flash only from Windows PowerShell** (WSL can't see
+  USB; probe-rs.exe + the probe live on Windows). `cargo run` uses the
+  runner in `.cargo/config.toml`.
+- The probe-rs runner flip in `.cargo/config.toml` is a **local,
+  uncommitted** change (repo default stays UF2 so probe-less contributors
+  aren't broken). Don't `git add` that file.
 
-## Your task (priority order)
-
-### 1. Add a display driver module (the main work)
-
-Goal: render a static "MIDICaptain Remedy" splash screen on the ST7789,
-upside-down, at full brightness. That's the floor; once you have a
-splash, port the scene-graph patterns from
-[`../remedy/lib/display.py`](../remedy/lib/display.py) into a
-`src/display/` module.
-
-Suggested layout (don't over-engineer — start with one file):
-
-```
-src/
-├── display.rs          ← driver wrapper, public API: init/clear/render
-└── examples/
-    └── display_splash.rs   ← new example that uses it
-```
-
-Or if it grows organically: `src/display/{driver.rs, scene.rs,
-palette.rs}` later. Start single-file.
-
-#### Crate choices
-
-| Crate | Version | Role |
-|---|---|---|
-| `mipidsi` | `0.10` (latest stable) | ST7789 driver. Has `Builder::st7789(...)` already. |
-| `display-interface-spi` | `0.5` | SPI-byte protocol the mipidsi builder wants |
-| `embedded-graphics` | `0.8` | Primitives (text, rect, lines) |
-| `embedded-hal-bus` | `0.3` | For sharing the SPI bus if you ever need to. Probably overkill — start with `embedded_hal::spi::ExclusiveDevice` from `embedded-hal-bus`. |
-
-mipidsi 0.10 changed its API significantly from 0.7/0.8 — don't trust
-older blog posts or stale Stack Overflow answers. Use the docs at
-<https://docs.rs/mipidsi/0.10> and the examples in
-<https://github.com/almindor/mipidsi/tree/master/mipidsi/examples>.
-
-For embedded-graphics text with the PCF fonts the CP firmware uses,
-look at `embedded-graphics::mono_font` for built-ins or
-`u8g2-fonts` if you need to keep the exact PTSans look. Bringing the
-existing PCF files over is non-trivial — easiest path is to start with
-`embedded_graphics::mono_font::ascii::FONT_10X20` or similar and chase
-fidelity later.
-
-#### Critical ST7789 init details (read these BEFORE writing code)
-
-These come from
-[`../remedy/lib/display.py:493-509`](../remedy/lib/display.py#L493):
-
-- **`rowstart = 80`** (panel-specific offset). The ST7789's RAM is
-  240×320; the 240×240 panel ships a 80-row offset in Y. mipidsi
-  expresses this via `.display_offset(0, 80)` on the Builder.
-  **Without this, the image will be offset / clipped.**
-- **`rotation = 180`** because the display is mounted upside-down in
-  the chassis. mipidsi: `.orientation(Orientation::new().rotate(Rotation::Deg180))`
-  (check current API — may be `.flip_horizontal().flip_vertical()`
-  depending on version).
-- **`baudrate = 24_000_000`** (24 MHz). Both the CP code AND
-  `firmware/src/pins.rs::DISPLAY_SPI_BAUD` agree. Don't go faster
-  without scoping signal integrity.
-- **No reset pin on the panel** — CP passes `reset=None`. The ST7789
-  initializes from software-only reset commands. mipidsi handles this
-  if you pass `NoPin` or omit the reset pin.
-
-#### Pin assignments (from `src/pins.rs`, mirrored from
-`remedy/lib/pins.py`)
-
-| Signal | RP2040 pin | Notes |
-|---|---|---|
-| SPI1 SCK  | GP14 | hardware SPI1 |
-| SPI1 MOSI | GP15 | display is write-only — no MISO |
-| TFT CS    | GP13 | plain GPIO output |
-| TFT DC    | GP12 | data/command select |
-| Backlight | GP8  | PWM-capable. Plain `Output::High` is fine if you don't need dimming day one. |
-
-#### Reference materials (in order of usefulness)
-
-1. **[`../remedy/lib/display.py`](../remedy/lib/display.py)** —
-   623 LOC. The CP-side display abstraction. Read top-to-bottom. The
-   important classes:
-   - `ColorPalette` (lines 35-128) — named colors, dim/dark variants
-     computed on first use, conversion to displayio integers
-   - `DisplayElement` (lines 130-176) — base class with dirty-flag
-     rendering pattern. Port this concept to Rust as a trait.
-   - `ValueBar` (178-313) — horizontal value bar with label,
-     bg/fg/outline. The encoder feedback widget.
-   - `TextPanel` (315-424) — labeled text box, multi-line.
-   - `DisplayManager` (426-623) — owns the SPI bus and root group;
-     creates layers; manages fonts. The init dance is in `_init_display`.
-     Layered group structure (root → layers → elements).
-2. **[`../remedy/lib/menu.py`](../remedy/lib/menu.py)** — 388 LOC.
-   Settings menu UI: page navigation, encoder rotation = list nav,
-   long-press to enter. Calibration wizard for expression pedals
-   (3-step state machine). Worth a skim; ports later.
-3. **OEM reference (compiled bytecode, opaque):**
-   - `../MIDICAPTAIN_OEM_BACKUP/lib/adafruit_st7789.mpy` — the actual
-     CP driver the OEM ships. Source is public:
-     <https://github.com/adafruit/Adafruit_CircuitPython_ST7789>.
-     Useful only to cross-reference init sequences if mipidsi gives
-     you trouble. (TL;DR: it's just `adafruit_st7789.ST7789` wrapping
-     `displayio` — the init magic lives in
-     `adafruit_st7789/__init__.py` in that repo: a few `_INIT_SEQUENCE`
-     bytes that mipidsi already encodes.)
-   - `../MIDICAPTAIN_OEM_BACKUP/lib/midicaptain.mpy`,
-     `midicaptain10s.mpy`, `midicaptain_ledon.mpy`, `midigeek.mpy`,
-     `midigeek_C.mpy` — OEM-custom modules (compiled, no source).
-     Boot-mode dispatched by `MIDICAPTAIN_OEM_BACKUP/code.py` lines
-     336-356 based on key combo at power-on. These define the visible
-     OEM behaviours (page layouts, footswitch maps, LED behaviour
-     per mode). If you want to know exactly how the OEM presents the
-     UI, you'd need to decompile with `mpy-cross` or
-     <https://github.com/dhylands/mpy-cross-decompile>. Probably
-     unnecessary — the `remedy/` CP firmware has already absorbed the
-     useful patterns.
-   - `../MIDICAPTAIN_OEM_BACKUP/fonts/` — PCF bitmap fonts the OEM
-     uses (`PT40.pcf`, `PT60.pcf`, `PT75.pcf`, etc.). Bringing these
-     over to Rust requires converting to a format `u8g2-fonts` or
-     `embedded-graphics` understands. Punt on this; start with built-in
-     monospace fonts.
-4. **mipidsi examples in their repo** —
-   <https://github.com/almindor/mipidsi/tree/master/mipidsi/examples>
-   has examples for the embassy-rp + ST7789 combination. Start from
-   one that uses `embassy_rp::spi::Spi` and `display_offset`.
-
-### 2. (After display works) Update `HARDWARE.md` SWD pad location
-
-The owner has reverse-engineering docs that aren't on this branch.
-Ask them to share, then fill in
-[`HARDWARE.md`](HARDWARE.md)'s `SWD debug pads` section. That unlocks
-`probe-rs run` for live RTT logging the moment the Pi Debug Probe
-arrives.
-
-### 3. Add a real `src/bin/midicaptain.rs` application binary
-
-The examples are PoC transport tests. Once you have a display driver
-the application skeleton can start consolidating tasks per the graph
-in [`ARCHITECTURE.md`](ARCHITECTURE.md). This may or may not be your
-session's scope — at minimum, *don't* add display features into
-`examples/blink.rs`; create a new example or the app binary instead.
-
-## Quirks & gotchas you'll otherwise hit
-
-These each cost ~15-30 min last session. They're all fixed in committed
-code but if you touch the surrounding areas you'll re-encounter them.
-
-| # | Symptom | Cause | Fix |
-|---|---|---|---|
-| 1 | `static_cell` fails to compile with "compare_exchange requires CAS" | Cortex-M0+ has no native CAS atomics | `portable-atomic = { version = "1", features = ["critical-section"] }` already in `Cargo.toml` |
-| 2 | `feature 'arch-cortex-m' does not exist on embassy-executor 0.10` | Renamed in 0.10 release | Use `platform-cortex-m` (committed) |
-| 3 | `feature 'defmt-03' does not exist on embedded-io-async` | Older name | Use `defmt` |
-| 4 | `cargo:rustc-link-arg-bins=...` errors with "package does not have a bin target" | No `[[bin]]` in Cargo.toml; only examples | Use `cargo:rustc-link-arg=...` (applies to everything). `build.rs` already does this. |
-| 5 | `expected SpawnToken, found Result<SpawnToken, SpawnError>` | embassy-executor 0.10 makes `#[task]`-attributed functions return `Result` from the macro's expanded callsite | `spawner.spawn(task_fn(args).unwrap())` — there's no `must_spawn` API in 0.10 |
-| 6 | `LineCoding.data_rate is a private field` | `data_rate` became a method in embassy-usb 0.6 | Call as `.data_rate()` |
-| 7 | `ControlChanged` has no `line_coding()` method in embassy-usb 0.6 | Method was added on `main` after 0.6.0; not yet released | Co-locate the BOOTSEL watcher with the CDC `Sender` (which DOES expose `line_coding()`). See `examples/serial_echo.rs::writer_and_watcher`. When a 0.6.x patch ships with the method, simplify by splitting watcher into its own task. |
-| 8 | `PioWs2812` has 4 generic params (P, S, N, ORDER); turbofish gets noisy | embassy-rp 0.10 added ORDER param | Use a let-binding: `let mut ws: PioWs2812<'_, PIO0, 0, { pins::NEOPIXEL_COUNT }, _> = PioWs2812::new(...);` — leaves ORDER for inference |
-
-## How to flash & test on hardware
-
-### Without a probe (today's reality)
-
-1. Hold **Switch 1** on the MIDI Captain while plugging in USB.
-   Device enumerates as `RPI-RP2` mass storage.
-2. From `firmware/`: `cargo run --release --example blink`
-3. `elf2uf2-rs -d` converts the ELF → UF2 → drops onto the drive →
-   device flashes and reboots.
-
-If Switch 1 + power-on isn't getting you to BOOTSEL because the running
-firmware is wedged, flash `serial_echo` first, then use the recovery
-channel:
-
+**First action for next session on hardware:** flash the app skeleton and
+confirm the pipeline:
 ```powershell
-py ..\scripts\bootsel_hammer.py
+cargo run --release --bin midicaptain
 ```
+Press footswitches → the status panel should show `<name> x<count>` and
+RTT should log `router: A pressed -> count=N` / `display: A xN`. That
+validates the channel architecture before fanning out work onto it.
 
-(opens the device's CDC port at 1200 baud, drops DTR; firmware detects
-this and calls `rom_data::reset_to_usb_boot(0, 0)`)
+## The remaining trajectory (priority + parallelization)
 
-### With a probe (once one arrives)
+The router in `bin/midicaptain.rs` is the **shared integration surface**.
+Everything else is either an *independent module* that feeds the router
+through a channel (parallelisable), or *integrative* work that edits the
+router/app state (serialise it).
 
-Edit `.cargo/config.toml`: comment the `elf2uf2-rs -d` line, uncomment
-`probe-rs run --chip RP2040`. Wire to SWD pads
-(location TBD — see `HARDWARE.md`). Then `cargo run` flashes AND
-streams RTT logs.
+### Step 0 — Planning task (do this first, it unblocks parallelism)
 
-## Branch / repo invariants
+Define the **channel contracts** in one place (suggest `src/events.rs` or
+`src/app.rs`): the message enums every task codes against —
+`ButtonEvent` (exists, in the bin), `EncoderEvent`, `ExprEvent`,
+`MidiRx`, `MidiCmd`, `LedFrame`, `DisplayCmd` (exists). Freeze these
+types first; then independent sessions can build against stable
+interfaces without colliding. This is the highest-leverage 30 minutes in
+the whole plan.
 
-- Don't modify `../remedy/`, `../webapp/`, `../MIDICAPTAIN_OEM_BACKUP/`,
-  `../presets/`, or root `../CLAUDE.md`. All firmware work goes in
-  `firmware/`.
-- Don't expose USB MSC anywhere. The whole point is the device owns
-  flash exclusively.
-- Don't merge to `main`. The branch lives on `rust-embassy-port`
-  (forked from `SAFE_main`) until the port fully replaces CP.
-- Commit `Cargo.lock` (it's a binary-producing crate).
-- Run `cargo clippy --examples -- -D warnings` before pushing.
+### Independent modules — safe to parallelise (new files, channel-driven)
 
-## Watch-outs specific to display work
+Each is a new `src/<area>/*.rs` + a spawnable task + its event type. They
+barely touch shared files, so they can run as concurrent subagents or
+parallel sessions and merge cleanly. CP reference in parens.
 
-- **CP boot.py SPI claim bug**: the CP firmware has an entire NVM
-  guard mechanism (`remedy/lib/display.py:_nvm_guarded_reset`) because
-  `import storage` in boot.py claims SPI1 pins as a side effect on
-  CP10. **This does not apply to Rust** — we have no `storage` module
-  doing that. You don't need to port any of the
-  `_nvm_*` / `release_displays()` complexity. mention this in the
-  display module's header comment so it doesn't get re-introduced.
-- **PCF fonts**: `MIDICAPTAIN_OEM_BACKUP/fonts/*.pcf` (PT40, PT60,
-  PT75 = Adafruit PT-Sans variants). They're bitmap fonts in X11 PCF
-  format. Rust embedded-graphics doesn't read PCF natively. Options:
-  (a) start with `embedded_graphics::mono_font` built-ins (ugly but
-  works), (b) convert PCF → BDF → use `u8g2-fonts`, (c) bake a custom
-  font compiler. Don't bikeshed this in session two — pick (a).
-- **Splash content**: the OEM splash is in `MIDICAPTAIN_OEM_BACKUP/
-  logo.bmp` and `wallpaper/`. Don't reuse them — the "Remedy" branding
-  is intentionally distinct.
+| Module | New files | Feeds | CP reference | Notes |
+|---|---|---|---|---|
+| **WS2812 LEDs** | `src/hal/leds.rs` | consumes `LedFrame` | `remedy/lib/pins.py` LED_MAP, `hardware.py` brightness | `examples/blink.rs` already proves PIO/DMA; port per-switch RGB + idle dim + toggle states. 30 LEDs, 3/switch. |
+| **MIDI engine** | `src/midi/{mux,sysex,katana}.rs` | `MidiRx`→router, consumes `MidiCmd` | `remedy/lib/midi.py` | `examples/midi_passthrough.rs` proves USB↔DIN. Add SysEx reassembly across USB-MIDI 4-byte CINs; Roland checksum + Katana model ID. The biggest single chunk. |
+| **Encoder** | `src/hal/encoder.rs` | `EncoderEvent`→router | `remedy/lib/hardware.py` EncoderHandler | Quadrature on GP2/GP3, push GP0. GPIO-IRQ driven. |
+| **Expression** | `src/hal/expression.rs` | `ExprEvent`→router | `remedy/lib/hardware.py`, `menu.py` calib | ADC on GP27/28. Needs calibration storage (stub first, wire to Storage later). |
+| **Storage** | `src/storage.rs` | request/response | NVM layout in root `CLAUDE.md` | `sequential-storage` over `embassy_rp::flash`. Unblocks expression calibration + settings + config persistence. Foundational — worth doing early in parallel. |
 
-## Concrete deliverable for next session
+### Integrative work — serialise (edits router / app state / display modes)
 
-When you're done, the user should be able to:
+These change `bin/midicaptain.rs` (or `app.rs` once extracted) and/or add
+display modes. One owner at a time to avoid churn on the shared file.
 
-```powershell
-cargo run --release --example display_splash
-```
+1. **Config + page system** (`remedy/lib/config.py`, `events.py`,
+   `config/*.toml`). Defines what buttons *do* (CC/PC/SysEx/page-nav per
+   button per page). This is the router's brain — promote the stub
+   counter logic into real action dispatch. Start with a baked-in config
+   (serde over a `&str`), move to flash-loaded later.
+2. **Settings menu** (`remedy/lib/menu.py`). Encoder-driven; needs
+   encoder + display + storage. A display "mode."
+3. **Tuner** (`remedy/lib/tuner.py`). Big note glyph + cents needle;
+   pitch via MIDI. A display "mode." Self-contained once MIDI-in exists.
+4. **Device sync** (Katana RQ1 on boot → toggle LED states). Needs MIDI +
+   LEDs + config.
+5. **Webapp sync** (COBS+CRC16 over USB CDC). Later; rides the CDC class.
 
-…and see "MIDICaptain Remedy" rendered legibly on the ST7789 (right-
-side-up from the user's POV — i.e., display rotation applied). Plus
-clean clippy, plus the display module documented in
-`ARCHITECTURE.md`'s "Project layout" section (just move it from
-"Future modules" to actual).
+### Suggested orchestration shape
 
-Estimated effort: 2-4 hours including hardware iteration. Worst case
-is the rotation/offset combo; the cheat code is `rowstart=80` +
-180° rotation + verify by drawing a single coloured pixel at (0, 0)
-and (239, 239) before drawing text.
+- **Wave 1 (parallel):** Storage, LEDs, Encoder, MIDI-engine — four
+  independent module sessions/subagents against the frozen channel
+  contracts. Each lands a `src/...` module + task + a tiny example or
+  unit of proof. None edits the bin.
+- **Wave 2 (serialise, you drive):** integrate Wave 1 tasks into the app
+  binary; build the config/page system (the router's real logic).
+- **Wave 3 (parallel again):** Settings menu, Tuner, Device sync — each a
+  display mode / feature on top of the integrated base.
+- **Cross-cutting:** promote the inline buttons/router/display tasks out
+  of `bin/` into `src/hal/` + `src/app.rs` once two+ subsystems are in
+  (don't pre-abstract — let it pull apart naturally).
 
-Good luck.
+A note on cost: parallel subagents editing the *same* files conflict.
+Keep Wave-1 work in **new files** and the integration **serial**. Use
+`isolation: "worktree"` for any agent that must touch shared files
+concurrently.
+
+## Invariants (do not violate)
+
+- **Branch/PR:** target `SAFE_main`, **never `main`**. The repo is a
+  **fork of `nicola-lunghi/hiper-midicaptain`** — `gh pr create` defaults
+  the base to the *upstream*. `gh repo set-default mycosavant/midicaptain_remedy`
+  is already set; still pass `-R mycosavant/midicaptain_remedy --base
+  SAFE_main` explicitly and verify `isCrossRepository=false`. (See the
+  `project-rust-port-branching` memory.)
+- **Don't modify** `../remedy/`, `../webapp/`, `../MIDICAPTAIN_OEM_BACKUP/`,
+  `../presets/`, root `../CLAUDE.md`. Firmware work stays in `firmware/`.
+- **No USB MSC.** The device owns its flash exclusively.
+- **Commit `Cargo.lock`.** Don't commit the `.cargo/config.toml` runner
+  flip.
+- **Green gate before pushing:**
+  `cargo build --release --bins --examples` and
+  `cargo clippy --release --bins --examples -- -D warnings` (note
+  `--bins` — there's a binary now).
+
+## Gotchas still live
+
+- embassy-executor 0.10 spawn idiom: `spawner.spawn(task(args).unwrap())`
+  (the `#[task]` call yields a Result; unwrap to the token). No
+  `must_spawn`.
+- mipidsi 0.10 ≠ CircuitPython conventions: offset is constant across
+  rotation; this panel needs colour inversion ON. (Documented in
+  `display.rs` header — don't "fix" it back to the CP numbers.)
+- Channels need a `RawMutex`: `CriticalSectionRawMutex` +
+  `static CH: Channel<...> = Channel::new()` (const). See the bin.
+- Older display-driver / bootstrap gotchas: `git log -p firmware/HANDOFF.md`.
+
+## Meta
+
+Previous handoffs encoded forward-looking knowledge here and let code +
+commits carry the backward-looking detail. This one widens that: it's a
+*planning seed* for an orchestrator, not a single-task brief. Keep that
+framing if you re-hand-off — give the next driver the dependency map and
+the parallel/serial split, not a linear to-do list.
+
+Good luck — the foundation is solid and validated; it's build-out from here.

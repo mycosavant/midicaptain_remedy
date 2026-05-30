@@ -10,4 +10,6 @@
 
 #![no_std]
 
+pub mod display;
 pub mod pins;
+pub mod ui;
