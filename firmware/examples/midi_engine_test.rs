@@ -35,7 +35,7 @@ use embassy_sync::channel::Channel;
 use embassy_time::Timer;
 use embassy_usb::class::midi::MidiClass;
 use embassy_usb::{Builder, Config as UsbConfig};
-use midicaptain_firmware::events::MidiCmd;
+use midicaptain_firmware::events::{MidiCmd, MidiRx};
 use midicaptain_firmware::midi::{katana, mux, sysex};
 use midicaptain_firmware::pins;
 use static_cell::StaticCell;
@@ -221,6 +221,19 @@ fn self_test() {
         }
     }
     defmt::assert!(notes == 2, "running-status decode produced {=u32} notes", notes);
+
+    // 3c. Pitch-bend decode (LSB first, then MSB; 14-bit). Centre packet
+    //     (LSB 0x00, MSB 0x40) → 8192; all-ones → 16383.
+    defmt::assert!(
+        mux::decode_usb_channel(&[0x0E, 0xE0, 0x00, 0x40])
+            == Some(MidiRx::PitchBend { channel: 0, value: 8192 }),
+        "pitch-bend centre decode failed"
+    );
+    defmt::assert!(
+        mux::decode_usb_channel(&[0x0E, 0xE0, 0x7F, 0x7F])
+            == Some(MidiRx::PitchBend { channel: 0, value: 16383 }),
+        "pitch-bend max decode failed"
+    );
 
     info!("midi self-test: ALL PASS");
 }

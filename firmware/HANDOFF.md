@@ -75,58 +75,68 @@ modules all landed, each with a proof example, gate green:
 
 None of these are wired into the router yet — that's Wave 2.
 
-### ▶ Wave 2 — integration + config/page system (SERIAL, the driver owns the bin)
+### ✅ Wave 2 — DONE (merged + hardware-validated)
 
-This is the current focus. Concrete build sequence:
+Integration + the config/page system landed across phased commits (PRs
+#12/#13 + boot-robustness #14), all merged to `SAFE_main`:
+- All five Wave-1 modules wired into the bin behind one `bind_interrupts!`;
+  `Router` (in `src/app.rs`) drives config/page action dispatch (CC/PC/
+  SysEx/page-nav), per-CC toggle state + LED feedback, bidirectional CC
+  sync, and `DisplayCmd` Page/Action modes; `select4` over the four input
+  channels. Footswitch scanner lifted to `src/hal/buttons.rs`; bin is thin
+  wiring.
+- Boot robustness: display task spawns first ("booting…" splash); display
+  init is non-fatal (headless fallback); hold **UP+DOWN at power-on** →
+  `Storage::factory_reset()`.
+- **Validated on real silicon** (probe-rs/SWD): clean boot, footswitch →
+  page-nav + A–D toggle LEDs, flash settings persist across reboot.
 
-**Phase A — prep (3 independent units; new/isolated code, parallelisable):**
-1. `hal/encoder.rs`: add `encoder_task` + `EncoderChannel/Sender/Receiver`
-   aliases (the module currently exposes only `Encoder`/`next_event`,
-   unlike `expression`/`leds` which already ship a task + aliases).
-2. `src/config/` (new): the action model — `Action` enum
-   (`MidiCc{cc,value|toggle}`, `ProgramChange`, `Sysex`, `PageNext`,
-   `PagePrev`, …), `ButtonConfig{label,color,on_press,on_long_press}`,
-   `Page{name,buttons:[_;10]}`, `Config{pages}` + a **baked-in default
-   `Config`** (Rust consts; flash-loaded TOML deferred). Ref:
-   `remedy/lib/{config,events}.py`, `remedy/config/*.toml`.
-3. `storage.rs`: fix the "16-bit ADC span" comment (RP2040 ADC is 12-bit)
-   and document the `PedalCal → expression::Calibration` mapping.
+Chosen decisions still in force: router fan-in = `select4`; config v1 =
+baked-in Rust consts; USB stood up composite-capable (MidiClass now).
 
-**Phase B — integration spine (serial; edits the bin):** one `bind_interrupts!`
-merging `USBCTRL_IRQ`/`UART0_IRQ`/`ADC_IRQ_FIFO`/`PIO0_IRQ_0`/`DMA_IRQ_0`;
-construct + spawn LEDs (PioWs2812), encoder, expression (load calibration
-from `Storage` on boot), MIDI (USB composite + `BufferedUart`, mux loops in
-concrete wrapper tasks — embassy `#[task]`s can't be generic). Promote the
-router to multi-input via a `RouterIn` merge enum + small per-source
-forwarder tasks (one clean `receive().await` loop), holding app state
-(page index, per-button toggles).
+### ▶ Wave 3 — display modes / features (current focus)
 
-**Phase C — the router's brain (serial):** replace the stub press-counter
-with action dispatch (`on_press`/`on_long_press` → `MidiCmd`/SysEx/page-nav);
-page nav cycles pages + clears toggles; LED feedback builds an `LedFrame`
-from page colours (full vs `idle_dim` per toggle); incoming `MidiRx` CC
-syncs toggle state; grow `DisplayCmd` with page-mode variants (additive —
-keep the router match exhaustive).
+Features (CP refs): **settings menu** (`menu.py`), **tuner** (`tuner.py`),
+**device sync** (Katana RQ1→LED states), **webapp sync**.
 
-**Phase D — cross-cutting extract (once 2+ subsystems are wired):** lift the
-inline footswitch task → `hal/buttons.rs`, the router/app state → `app.rs`;
-the bin becomes thin wiring.
+**Step 0 — foundation (serial; freeze first):**
+- `events::MidiRx::PitchBend { channel, value }` + decode `0xE0` in
+  `midi/mux.rs` — the tuner reads the note (Note On) + cents (Pitch Bend)
+  from the amp; the contract currently drops pitch-bend. *(Additive —
+  landed in `feat/wave3-foundation`.)*
+- **Display-mode state machine** in `app::Router`: `Mode { Performance,
+  Menu, Tuner }`; input routing becomes mode-dependent; the display task
+  renders the active screen (new `ui` widgets `MenuView` / `TunerView`).
+- **Encoder long-press** in the Router (hold → enter/exit menu).
+- **`Storage` → `Router`** (currently stranded in `main` after boot; the
+  menu needs to persist — `store()` is async, so the save path awaits in
+  the router loop).
+- **Route `SYSEX_IN` into the router** (`select4`→`select5`) — currently
+  produced but unconsumed; device-sync needs the Katana DT1 responses.
 
-**Key decisions (chosen):** router fan-in = `RouterIn` enum + forwarders;
-config v1 = baked-in Rust consts (no_std serde-TOML from flash is a later
-research item — don't let it block Phase C); USB stood up composite-capable
-(MidiClass now, room for CDC later).
+**Per-feature work (parallelisable on the foundation):**
+- *Settings menu* — items: MIDI channel, display/LED brightness, pedal
+  calibration, exit. Needs **PWM backlight** (`display.rs` is plain
+  GPIO-high) for display brightness; an **LED brightness scale** in the LED
+  task; and **raw-ADC plumbing** for calibration (the wizard captures the
+  raw value, but `expression_task` only emits mapped 0–127 — add a cal-mode
+  / query path). `CalibrationWizard` is already ported in `expression.rs`.
+- *Tuner* — `ui::TunerView` (big note + cents bar; `ValueBar` is close) +
+  state from `MidiRx::Note`/`PitchBend`. `TunerToggle` action already exists
+  (send CC#25, enter Tuner mode).
+- *Device sync* — boot/connect RQ1 sweep + a Katana DT1 response parser in
+  `midi/katana.rs`; updates toggle LED states.
+- *Webapp sync — DEFERRED.* The existing webapp (on `main`, not the port) is
+  a static **OEM-format preset *file* editor** (SuperMode `page*.txt`,
+  GeekMode `gekey*.dat`) that exports via file download + Web-MIDI preview —
+  it has **no USB-serial path**, and the port has **no USB MSC**. Real sync
+  would need the webapp to also learn the Rust config + a WebSerial transport
+  (a cross-branch effort). Scope it only when that's on the table.
 
-### Wave 3 — display modes / features (parallelisable on the integrated base)
-
-1. **Settings menu** (`remedy/lib/menu.py`) — encoder-driven; needs encoder
-   + display + storage. A display "mode."
-2. **Tuner** (`remedy/lib/tuner.py`) — big note glyph + cents needle; pitch
-   via MIDI. A display "mode," self-contained once MIDI-in exists.
-3. **Device sync** — Katana RQ1 on boot → toggle LED states. Needs MIDI +
-   LEDs + config.
-4. **Webapp sync** — COBS+CRC16 over USB CDC. Rides the (already composite)
-   CDC class.
+Recommended sequence: foundation → settings menu (retires the UP+DOWN reset
+hack) → tuner → device sync. Menu + tuner share the display-mode surface;
+keep each mode self-contained (own state + `*View` widget) so they merge
+cleanly.
 
 A note on cost: parallel subagents editing the *same* files conflict. Keep
 new work in **new files** and integration **serial**. Use

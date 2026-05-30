@@ -92,6 +92,11 @@ pub fn decode_voice(status: u8, d0: u8, d1: u8) -> Option<MidiRx> {
             channel,
             program: d0,
         }),
+        // Pitch bend: LSB first (`d0`), then MSB (`d1`), each 7-bit → 14-bit.
+        0xE0 => Some(MidiRx::PitchBend {
+            channel,
+            value: ((d1 as u16) << 7) | d0 as u16,
+        }),
         _ => None,
     }
 }
