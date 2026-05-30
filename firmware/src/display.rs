@@ -14,6 +14,11 @@
 //!   this inverted panel. Using mipidsi `Deg180` + offset 80 (the naive CP
 //!   translation) lands the image inverted with an 80-row (⅓-screen) band
 //!   of stale GRAM — the exact bug seen during bring-up.
+//! - **Colour inversion ON** (`INVON`). This IPS glass renders every
+//!   colour as its complement unless display inversion is enabled. mipidsi
+//!   defaults the ST7789 to `Normal` (INVOFF), so we force `Inverted`.
+//!   Verified on hardware — the grayscale splash masked this; pure-colour
+//!   swatches exposed it (RED→cyan, BLUE→yellow, WHITE→black).
 //! - **24 MHz SPI clock**. Matches the CircuitPython firmware exactly
 //!   (see `remedy/lib/display.py::_init_display`); going faster needs
 //!   signal-integrity validation on the flex cable.
@@ -43,7 +48,7 @@ use embassy_time::Delay;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
-use mipidsi::options::{Orientation, Rotation};
+use mipidsi::options::{ColorInversion, Orientation, Rotation};
 use mipidsi::{Builder, NoResetPin};
 use static_cell::StaticCell;
 
@@ -138,6 +143,11 @@ pub fn init(peri: DisplayPeripherals) -> Result<(RemedyDisplay, Output<'static>)
         // chassis-inverted panel under mipidsi's convention.
         .display_offset(0, 0)
         .orientation(Orientation::new().rotate(Rotation::Deg0))
+        // This IPS panel needs display inversion ON (INVON). Verified on
+        // hardware: without this, every colour renders as its complement
+        // (RED→cyan, BLUE→yellow, WHITE→black). mipidsi defaults the ST7789
+        // to ColorInversion::Normal, which is wrong for this glass.
+        .invert_colors(ColorInversion::Inverted)
         .init(&mut delay)
         .map_err(|_| InitError::Driver)?;
 
