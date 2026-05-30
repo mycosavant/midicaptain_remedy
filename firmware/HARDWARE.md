@@ -93,34 +93,86 @@ The VID is load-bearing: `../scripts/bootsel_hammer.py` matches devices
 by VID `0x2E8A` to know when to issue the 1200-baud BOOTSEL touch.
 Change the VID and the recovery workflow breaks. Change the PID freely.
 
-## SWD debug pads
+## SWD debug pads — VERIFIED
 
-**TBD** — locate from the reverse-engineering docs in this repo (not
-checked in to this branch yet). When found, document here as:
+**Verified on hardware 2026-05-30** with a Raspberry Pi Debug Probe +
+`probe-rs`: the RP2040 enumerates over SWD (DPv2, Designer "Raspberry Pi
+Trading Ltd", Part `0x1002`), with **both** Cortex-M0+ cores visible as
+multidrop instances `0x00`/`0x01`, each exposing a MemoryAP and the ARM
+ROM Table at `0xe00ff000`.
 
-```
-SWCLK pad: <location on PCB, e.g. "top-side, U1 pin 24 via 2.54 mm test point near power input">
-SWDIO pad: <location>
-GND pad:   <location>
-RUN/RESET: <location, optional but useful for hard reset>
-```
+No public teardown labels these pads. The two RP2040 reverse-engineering
+projects ([nicola-lunghi/hiper-midicaptain](https://github.com/nicola-lunghi/hiper-midicaptain),
+[paulhamsh/PaintaudioMidiCaptain](https://github.com/paulhamsh/PaintaudioMidiCaptain))
+and the Kemper "PySwitch" community map GPIO/peripherals but not the
+debug interface — so this map was established first-hand.
 
-Until that's known, only the UF2 / 1200-baud-touch flash path works.
-That path is fine for active iteration — it just doesn't give us
-breakpoints or live RTT log streaming.
+### Location (bottom / solder side)
 
-### Pi Debug Probe wiring (for reference)
+The board is solid black solder-mask with **no white silkscreen**, but
+the copper pad shapes are legible. Both headers are **plated
+through-holes on the bottom side** — directly accessible once the chassis
+bottom slides off; no board extraction needed.
 
-Pinout once the SWD pads are identified:
+- **SWD header — 3-pad inline group, board centre** (through-holes
+  opposite the top-side RP2040). Pad shapes `■ ● ●`: one **square**
+  (pin 1) + two round.
+- **BOOTSEL jumper — 2-pad group `■ ●` just below/right.** Round pad is
+  GND; **short the two at power-on → UF2 recovery.** Independent of the
+  firmware's Switch-1-hold path — keep it as a hardware recovery option.
+- There is also a 4-pad strip nearer the top edge (likely a UART/serial
+  header — GND/TX/RX/3V3). Not characterised; not needed for SWD.
 
-| Probe | Target |
-|---|---|
-| GND | GND |
-| SC (SWCLK) | SWCLK pad |
-| SD (SWDIO) | SWDIO pad |
+### Pinout (continuity + probe handshake confirmed)
 
-Probe powers itself off the host USB; the MIDI Captain stays powered
-from its own USB cable. Don't bridge VBUS between them.
+| Pad (3-group)    | Signal | RPi Debug Probe "D" |
+|---|---|---|
+| **square** (pin 1) | **SWCLK** | SC |
+| **middle**         | **GND**   | GND |
+| **far**            | **SWDIO** | SD |
+
+GND on the middle pad confirmed by continuity to the DC-jack sleeve / USB
+shell. SWCLK↔SWDIO confirmed by the chip responding — a swap yields
+"target did not respond", so the successful enumeration proves the
+orientation.
+
+### Wiring & power
+
+- The 3-pin debug connector carries **NO VBUS**. Power the MIDI Captain
+  from its own USB; the probe powers from the host. **Common GND only —
+  do not bridge VBUS.**
+- The target does **not** need bootloader mode for SWD — a normally
+  running RP2040 answers the debug port.
+
+### Bring-up gotchas (each cost time; recorded so they don't recur)
+
+1. **Probe firmware ≥ 2.2.0 required.** A factory-fresh Debug Probe
+   shipped with older firmware; `probe-rs` refused with *"firmware on the
+   probe is outdated … minimum supported … 2.2.0."* Fix: hold the
+   probe's **BOOTSEL**, plug in (mounts `RPI-RP2`), drop the latest
+   `debugprobe.uf2` from
+   <https://github.com/raspberrypi/debugprobe/releases>.
+2. **"JTAG protocol could not be selected" is normal.** The Debug Probe
+   is **SWD-only**; `probe-rs` tries JTAG first, fails, falls through to
+   SWD. Ignore that line.
+3. **Flipped probe PCB in the housing.** On at least one unit the
+   internal board was rotated, so the case's **"D" (debug) and "U"
+   (UART) labels were swapped** — cabling to the labelled "D" port
+   actually drove UART and the target stayed silent ("did not respond").
+   If wiring checks out but nothing answers, **try the other port.**
+4. **Marginal contact.** Dupont pins resting in bare through-holes are
+   flaky; `--speed 100` (100 kHz) helps, or tack thin wires for
+   reliability.
+
+### Enabling the probe-rs runner
+
+[`.cargo/config.toml`](.cargo/config.toml) ships **UF2 as the default
+runner** (not every contributor has a probe — leave it the default).
+To use the probe locally: comment the `elf2uf2-rs -d` runner line and
+uncomment `probe-rs run --chip RP2040`. Then
+`cargo run --release --example display_widgets` flashes **and** streams
+`defmt`/RTT live — far faster than the UF2 reflash loop. The UF2 /
+1200-baud-touch path remains available as a fallback.
 
 ## Memory layout
 

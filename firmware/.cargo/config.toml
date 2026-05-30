@@ -1,7 +1,9 @@
 # ───────────────────────────────────────────────────────────────────────────
 # Dual-runner configuration.
 #
-# The MIDI Captain has no exposed debug header by default. While iterating
+# The MIDI Captain DOES have an SWD header (verified — a 3-pad through-hole
+# group on the bottom side; see HARDWARE.md), but UF2 stays the default
+# runner so contributors without a probe can flash. While iterating
 # without a probe, the UF2 path lets you flash by holding BOOTSEL during
 # power-on (or 1200-baud-touching the CDC port — see bootsel_hammer.py and
 # the 1200-baud reset hook in examples/serial_echo.rs). The device mounts as
