@@ -13,6 +13,7 @@
 pub mod display;
 pub mod events;
 pub mod hal;
+pub mod midi;
 pub mod pins;
 pub mod storage;
 pub mod ui;
