@@ -49,15 +49,24 @@ Everything else is either an *independent module* that feeds the router
 through a channel (parallelisable), or *integrative* work that edits the
 router/app state (serialise it).
 
-### Step 0 — Planning task (do this first, it unblocks parallelism)
+### Step 0 — Channel contracts ✅ DONE
 
-Define the **channel contracts** in one place (suggest `src/events.rs` or
-`src/app.rs`): the message enums every task codes against —
-`ButtonEvent` (exists, in the bin), `EncoderEvent`, `ExprEvent`,
-`MidiRx`, `MidiCmd`, `LedFrame`, `DisplayCmd` (exists). Freeze these
-types first; then independent sessions can build against stable
-interfaces without colliding. This is the highest-leverage 30 minutes in
-the whole plan.
+`src/events.rs` is committed (`95ac93f`): `ButtonEvent`, `EncoderEvent`,
+`ExprEvent`, `MidiRx`, `MidiCmd`, `LedColor`/`LedFrame`, `DisplayCmd`.
+The bin consumes them. Subsystem tasks code against these; add variants,
+don't change fields.
+
+### Wave 1 — spawned, in flight
+
+Five independent module workstreams were spawned as separate
+sessions/worktrees at the end of session 3, each briefed cold against
+`events.rs`: **MIDI engine**, **WS2812 LEDs**, **flash Storage**,
+**Encoder**, **Expression**. Each lands a `src/...` module + a runnable
+`examples/<x>_test.rs` + its own PR to `SAFE_main`. Dependency note:
+Expression's calibration persistence wants Storage — Expression stubs it
+and integrates later. As their PRs land, resolve the trivial
+`lib.rs`/`Cargo.toml` merge conflicts (keep all entries) and integrate
+each task into the app binary (Wave 2).
 
 ### Independent modules — safe to parallelise (new files, channel-driven)
 
