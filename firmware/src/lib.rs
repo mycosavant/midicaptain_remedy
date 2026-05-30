@@ -16,6 +16,7 @@ pub mod config;
 pub mod display;
 pub mod events;
 pub mod hal;
+pub mod menu;
 pub mod midi;
 pub mod pins;
 pub mod storage;

@@ -5,28 +5,35 @@
 //! (construct peripherals, spawn tasks); this module owns *what the device
 //! does* with the events those tasks produce.
 //!
-//! [`Router`] holds the application state — active page, per-CC toggle
-//! state, MIDI channel — and turns input events into the actions the active
-//! [`crate::config`] page defines: per-button CC / PC / SysEx / page-nav,
-//! with LED on/off feedback for toggles and a page/action readout on the
-//! display. Incoming MIDI CC syncs toggle state back (bidirectional).
+//! [`Router`] holds the application state — active display [`Mode`], page,
+//! per-CC toggle state, the live [`Settings`] (and the [`Storage`] to persist
+//! them), and the settings [`Menu`]. In [`Mode::Performance`] it dispatches
+//! the active [`crate::config`] page's actions (CC / PC / SysEx / page-nav)
+//! with LED + display feedback and bidirectional CC sync; in [`Mode::Menu`]
+//! it routes the encoder + footswitches to the settings menu.
 //!
-//! It is the **single owner** of that state (no shared mutables); the rest
-//! of the system influences it only by sending events to [`router_task`].
+//! It is the **single owner** of that state; the rest of the system
+//! influences it only by sending events to [`router_task`].
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_futures::select::{select4, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Instant};
 
 use crate::config::{self, Action, CcValue, Config, SysexCmd};
-use crate::events::{ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedFrame, MidiCmd, MidiRx};
+use crate::events::{
+    ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd, MidiRx,
+};
 use crate::hal::{buttons, encoder, expression, leds};
+use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
 use crate::pins;
+use crate::storage::{Settings, Storage};
 
-/// Press duration at/above which a release counts as a long-press.
+/// Press duration at/above which a release counts as a long-press. Used both
+/// for footswitches (short vs long action) and the encoder push (enter/exit
+/// the settings menu).
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
 /// CC the encoder drives (volume), and the per-pedal expression CCs —
@@ -50,18 +57,33 @@ pub type DisplaySender = Sender<'static, CriticalSectionRawMutex, DisplayCmd, DI
 /// Receiver half — held by the display task.
 pub type DisplayReceiver = Receiver<'static, CriticalSectionRawMutex, DisplayCmd, DISPLAY_QUEUE_DEPTH>;
 
+/// Active display mode — what the screen shows and how inputs route.
+enum Mode {
+    /// Live performance: footswitches dispatch page actions; encoder/expr → CC.
+    Performance,
+    /// Settings menu: encoder navigates/edits; footswitches drive calibration.
+    Menu,
+}
+
 /// The event router + application state.
 pub struct Router {
     config: Config,
     page: usize,
-    midi_channel: u8,
+    /// Live, editable settings (the menu mutates these; persisted on exit).
+    settings: Settings,
+    /// Flash store — owned here so the menu can persist.
+    storage: Storage,
+    mode: Mode,
+    menu: Menu,
     /// Accumulated encoder-driven value for [`ENCODER_CC`] (`0..=127`).
     enc_value: u8,
     /// Per-CC toggle state (on/off), indexed by CC number. Cleared on page
     /// change; synced from incoming MIDI CC.
     toggles: [bool; 128],
-    /// Press timestamps for long-press detection, per switch index.
+    /// Press timestamps for footswitch long-press detection, per switch index.
     press_at: [Option<Instant>; buttons::COUNT],
+    /// Encoder push timestamp, for its long-press (enter/exit the menu).
+    enc_press_at: Option<Instant>,
     display: DisplaySender,
     leds: leds::LedSender,
     midi_cmd: mux::MidiCmdSender,
@@ -69,11 +91,12 @@ pub struct Router {
 }
 
 impl Router {
-    /// Build a router bound to its output channels. `midi_channel` is the
-    /// 0-based wire channel (the caller converts from the 1-based setting).
+    /// Build a router bound to its output channels, the loaded settings, and
+    /// the flash store (for menu persistence).
     pub fn new(
         config: Config,
-        midi_channel: u8,
+        settings: Settings,
+        storage: Storage,
         display: DisplaySender,
         leds: leds::LedSender,
         midi_cmd: mux::MidiCmdSender,
@@ -82,15 +105,24 @@ impl Router {
         Self {
             config,
             page: 0,
-            midi_channel,
+            settings,
+            storage,
+            mode: Mode::Performance,
+            menu: Menu::new(),
             enc_value: 0,
             toggles: [false; 128],
             press_at: [None; buttons::COUNT],
+            enc_press_at: None,
             display,
             leds,
             midi_cmd,
             sysex_out,
         }
+    }
+
+    /// 0-based wire channel from the 1-based MIDI-channel setting.
+    fn wire_channel(&self) -> u8 {
+        self.settings.midi_channel.saturating_sub(1) & 0x0F
     }
 
     fn current_page(&self) -> &'static config::Page {
@@ -99,14 +131,16 @@ impl Router {
 
     /// Build the LED frame for the active page + toggle state and send it.
     /// Toggle buttons: full colour when on, `idle_dim` when off. Non-toggle
-    /// bound buttons: full colour. Unbound slots: off.
+    /// bound buttons: full colour. Unbound slots: off. Everything is then
+    /// scaled by the LED-brightness setting.
     fn refresh_leds(&self) {
         let page = self.current_page();
+        let bright = self.settings.led_brightness;
         let mut frame = LedFrame {
             switches: [config::color::OFF; pins::Switch::COUNT],
         };
         for (bi, btn) in page.buttons.iter().enumerate() {
-            let color = match btn.on_press.toggle_cc() {
+            let base = match btn.on_press.toggle_cc() {
                 Some(cc) => {
                     if self.toggles[cc as usize] {
                         btn.color
@@ -118,7 +152,7 @@ impl Router {
                 None => btn.color,
             };
             // Scan-index → WS2812 chain position.
-            frame.switches[config::SWITCH_FOR_BUTTON[bi] as usize] = color;
+            frame.switches[config::SWITCH_FOR_BUTTON[bi] as usize] = scale(base, bright);
         }
         let _ = self.leds.try_send(frame);
     }
@@ -141,7 +175,23 @@ impl Router {
         self.refresh_page();
     }
 
-    fn on_button(&mut self, ev: ButtonEvent) {
+    // ── input handlers (mode-routed) ───────────────────────────────────
+
+    async fn on_button(&mut self, ev: ButtonEvent) {
+        match self.mode {
+            Mode::Performance => self.on_button_perf(ev),
+            // In the menu a footswitch press captures a calibration endpoint.
+            Mode::Menu => {
+                if ev.pressed {
+                    let outcome = self.menu.footswitch(&mut self.settings);
+                    self.apply_menu_outcome(outcome).await;
+                }
+            }
+        }
+    }
+
+    /// Performance-mode footswitch handling: long/short-press action dispatch.
+    fn on_button_perf(&mut self, ev: ButtonEvent) {
         let idx = ev.index as usize;
         if idx >= buttons::COUNT {
             return; // defensive: ignore out-of-range indices
@@ -166,6 +216,7 @@ impl Router {
     }
 
     fn dispatch(&mut self, action: Action, label: &'static str) {
+        let channel = self.wire_channel();
         match action {
             Action::None => {}
             Action::MidiCc { cc, value } => {
@@ -177,21 +228,16 @@ impl Router {
                         (if on { 127 } else { 0 }, true, on)
                     }
                 };
-                let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-                    channel: self.midi_channel,
-                    cc,
-                    value: v,
-                });
+                let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
                 let _ = self.display.try_send(DisplayCmd::Action { label, toggle, on });
                 if toggle {
                     self.refresh_leds();
                 }
             }
             Action::ProgramChange { program } => {
-                let _ = self.midi_cmd.try_send(MidiCmd::ProgramChange {
-                    channel: self.midi_channel,
-                    program,
-                });
+                let _ = self
+                    .midi_cmd
+                    .try_send(MidiCmd::ProgramChange { channel, program });
                 self.announce(label);
             }
             Action::Sysex(cmd) => {
@@ -222,28 +268,52 @@ impl Router {
         });
     }
 
-    fn on_encoder(&mut self, ev: EncoderEvent) {
+    async fn on_encoder(&mut self, ev: EncoderEvent) {
         match ev {
-            EncoderEvent::Turn(delta) => {
-                let v = (self.enc_value as i16 + delta as i16).clamp(0, 127) as u8;
-                if v != self.enc_value {
-                    self.enc_value = v;
-                    let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-                        channel: self.midi_channel,
-                        cc: ENCODER_CC,
-                        value: v,
-                    });
+            EncoderEvent::Turn(delta) => match self.mode {
+                Mode::Performance => {
+                    let v = (self.enc_value as i16 + delta as i16).clamp(0, 127) as u8;
+                    if v != self.enc_value {
+                        self.enc_value = v;
+                        let channel = self.wire_channel();
+                        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
+                            channel,
+                            cc: ENCODER_CC,
+                            value: v,
+                        });
+                    }
+                }
+                Mode::Menu => {
+                    let outcome = self.menu.turn(delta, &mut self.settings);
+                    self.apply_menu_outcome(outcome).await;
+                }
+            },
+            EncoderEvent::Press => self.enc_press_at = Some(Instant::now()),
+            EncoderEvent::Release => {
+                let long = self
+                    .enc_press_at
+                    .take()
+                    .map(|t| Instant::now().saturating_duration_since(t) >= LONG_PRESS)
+                    .unwrap_or(false);
+                if long {
+                    self.toggle_menu().await;
+                } else if matches!(self.mode, Mode::Menu) {
+                    let outcome = self.menu.press();
+                    self.apply_menu_outcome(outcome).await;
                 }
             }
-            EncoderEvent::Press => info!("router: encoder press (menu — Wave 3)"),
-            EncoderEvent::Release => {}
         }
     }
 
     fn on_expr(&self, ev: ExprEvent) {
+        // Pedals are silent in the menu — they're being moved for calibration.
+        if !matches!(self.mode, Mode::Performance) {
+            return;
+        }
         let cc = EXPR_CC[(ev.pedal as usize).min(1)];
+        let channel = self.wire_channel();
         let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-            channel: self.midi_channel,
+            channel,
             cc,
             value: ev.value,
         });
@@ -259,6 +329,63 @@ impl Router {
                 self.refresh_leds();
             }
         }
+    }
+
+    // ── menu mode ──────────────────────────────────────────────────────
+
+    /// Enter or leave the settings menu (encoder long-press).
+    async fn toggle_menu(&mut self) {
+        match self.mode {
+            Mode::Performance => {
+                self.mode = Mode::Menu;
+                self.menu.enter();
+                let cmd = self.menu.display_cmd(&self.settings);
+                let _ = self.display.try_send(cmd);
+            }
+            Mode::Menu => self.leave_menu().await,
+        }
+    }
+
+    /// Leave the menu: persist settings, restore the performance page (which
+    /// also re-applies LED brightness).
+    async fn leave_menu(&mut self) {
+        self.mode = Mode::Performance;
+        self.save().await;
+        self.refresh_page();
+    }
+
+    async fn apply_menu_outcome(&mut self, outcome: MenuOutcome) {
+        match outcome {
+            MenuOutcome::Redraw => {
+                let cmd = self.menu.display_cmd(&self.settings);
+                let _ = self.display.try_send(cmd);
+            }
+            MenuOutcome::Exit => self.leave_menu().await,
+            MenuOutcome::CalSaved(cals) => {
+                // Push live to the sampler (applies without a reboot) + persist.
+                expression::LIVE_CAL.lock(|c| c.set(Some(cals)));
+                self.save().await;
+                let cmd = self.menu.display_cmd(&self.settings);
+                let _ = self.display.try_send(cmd);
+            }
+        }
+    }
+
+    /// Persist the current settings to flash.
+    async fn save(&mut self) {
+        if self.storage.store(&self.settings).await.is_err() {
+            warn!("router: settings save failed");
+        }
+    }
+}
+
+/// Scale an LED colour by a brightness percentage (`0..=100`).
+fn scale(c: LedColor, pct: u8) -> LedColor {
+    let p = pct.min(100) as u16;
+    LedColor {
+        r: (c.r as u16 * p / 100) as u8,
+        g: (c.g as u16 * p / 100) as u8,
+        b: (c.b as u16 * p / 100) as u8,
     }
 }
 
@@ -291,8 +418,8 @@ pub async fn router_task(
         )
         .await
         {
-            Either4::First(b) => r.on_button(b),
-            Either4::Second(e) => r.on_encoder(e),
+            Either4::First(b) => r.on_button(b).await,
+            Either4::Second(e) => r.on_encoder(e).await,
             Either4::Third(x) => r.on_expr(x),
             Either4::Fourth(m) => r.on_midi_rx(m),
         }

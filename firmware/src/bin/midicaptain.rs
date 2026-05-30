@@ -50,7 +50,7 @@ use static_cell::StaticCell;
 use midicaptain_firmware::app::{self, Router};
 use midicaptain_firmware::config::DEFAULT_CONFIG;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
-use midicaptain_firmware::events::DisplayCmd;
+use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
 use midicaptain_firmware::hal::expression::{self, ExpressionInputs};
 use midicaptain_firmware::hal::leds::{self, LedDriver};
@@ -137,8 +137,6 @@ async fn main(spawner: Spawner) {
     }
     let settings = storage.load().await;
     info!("settings: {}", settings);
-    // 1-based menu channel → 0-based wire channel for the codec.
-    let wire_channel = settings.midi_channel.saturating_sub(1) & 0x0F;
 
     // ── LEDs (WS2812 on GP7 via PIO0 + DMA) ────────────────────────────
     // `common` / `ws_program` must outlive the driver; they live in `main`,
@@ -213,7 +211,8 @@ async fn main(spawner: Spawner) {
     // first page over the display task's "booting…" splash) ──────────────
     let router = Router::new(
         DEFAULT_CONFIG,
-        wire_channel,
+        settings,
+        storage,
         DISPLAY_CH.sender(),
         LED_CH.sender(),
         MIDI_CMD.sender(),
@@ -308,6 +307,31 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                 } else {
                     let _ = write!(line, "{}", label);
                 }
+                status.set_text(&line);
+                let _ = status.render(&mut display);
+            }
+            DisplayCmd::Menu { title: item, value, kind, editing } => {
+                title.set_text("SETTINGS");
+                let _ = title.render(&mut display);
+                let marker = if editing { "*" } else { ">" };
+                let mut line: String<32> = String::new();
+                let _ = match kind {
+                    MenuKind::Int => write!(line, "{} {}: {}", marker, item, value),
+                    MenuKind::Percent => write!(line, "{} {}: {}%", marker, item, value),
+                    MenuKind::Action => write!(line, "> {} (press)", item),
+                };
+                status.set_text(&line);
+                let _ = status.render(&mut display);
+            }
+            DisplayCmd::Cal { pedal, step, raw } => {
+                title.set_text("CALIBRATE");
+                let _ = title.render(&mut display);
+                let mut line: String<32> = String::new();
+                let _ = match step {
+                    CalStep::Min => write!(line, "P{} set MIN, SW  ({})", pedal + 1, raw),
+                    CalStep::Max => write!(line, "P{} set MAX, SW  ({})", pedal + 1, raw),
+                    CalStep::Done => write!(line, "P{} saved!", pedal + 1),
+                };
                 status.set_text(&line);
                 let _ = status.render(&mut display);
             }

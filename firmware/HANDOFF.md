@@ -104,23 +104,26 @@ Features (CP refs): **settings menu** (`menu.py`), **tuner** (`tuner.py`),
   `midi/mux.rs` — the tuner reads the note (Note On) + cents (Pitch Bend)
   from the amp; the contract currently drops pitch-bend. *(Additive —
   landed in `feat/wave3-foundation`.)*
-- **Display-mode state machine** in `app::Router`: `Mode { Performance,
-  Menu, Tuner }`; input routing becomes mode-dependent; the display task
-  renders the active screen (new `ui` widgets `MenuView` / `TunerView`).
-- **Encoder long-press** in the Router (hold → enter/exit menu).
-- **`Storage` → `Router`** (currently stranded in `main` after boot; the
-  menu needs to persist — `store()` is async, so the save path awaits in
-  the router loop).
-- **Route `SYSEX_IN` into the router** (`select4`→`select5`) — currently
+- **Display-mode state machine** in `app::Router` — landed as `Mode {
+  Performance, Menu }` (Tuner adds a variant later); input routing is
+  mode-dependent; the display task renders menu/cal screens via
+  `DisplayCmd::Menu`/`Cal`. *(Landed with the menu.)*
+- **Encoder long-press** in the Router (hold → enter/exit menu). *(Landed.)*
+- **`Storage` → `Router`** — moved in; `save()` awaits in the async handlers.
+  *(Landed.)*
+- **Route `SYSEX_IN` into the router** (`select4`→`select5`) — still pending;
   produced but unconsumed; device-sync needs the Katana DT1 responses.
 
 **Per-feature work (parallelisable on the foundation):**
-- *Settings menu* — items: MIDI channel, display/LED brightness, pedal
-  calibration, exit. Needs **PWM backlight** (`display.rs` is plain
-  GPIO-high) for display brightness; an **LED brightness scale** in the LED
-  task; and **raw-ADC plumbing** for calibration (the wizard captures the
-  raw value, but `expression_task` only emits mapped 0–127 — add a cal-mode
-  / query path). `CalibrationWizard` is already ported in `expression.rs`.
+- *Settings menu* — **LANDED** (`src/menu.rs`, encoder-driven, single-item
+  view). Items: MIDI channel, LED brightness, calibrate pedal 1/2, exit.
+  Enter via encoder long-press. **Live calibration** works: the wizard reads
+  the sampler's published raw via `expression::LATEST_RAW` and pushes the new
+  endpoints back via `expression::LIVE_CAL` (applied without a reboot) +
+  persists to flash. LED brightness scales the frame in `app::scale`.
+  *Deferred:* **display brightness** (needs a PWM backlight — `display.rs` is
+  still GPIO-high) and live-updating raw readout while moving the pedal (the
+  raw shown refreshes only on input events, CP-faithful).
 - *Tuner* — `ui::TunerView` (big note + cents bar; `ValueBar` is close) +
   state from `MidiRx::Note`/`PitchBend`. `TunerToggle` action already exists
   (send CC#25, enter Tuner mode).

@@ -33,12 +33,15 @@
 //! capture semantics; wiring it to live pedal readings and to flash is left
 //! to the menu + storage workstreams. This module does not block on them.
 
+use core::cell::Cell;
+
 use crate::events::ExprEvent;
 use defmt::warn;
 use embassy_rp::adc::{Adc, AdcPin, Async, Channel as AdcChannel};
 use embassy_rp::gpio::Pull;
 use embassy_rp::Peri;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Ticker};
 
@@ -86,6 +89,22 @@ pub type ExprChannel = Channel<CriticalSectionRawMutex, ExprEvent, EXPR_QUEUE_DE
 pub type ExprSender = Sender<'static, CriticalSectionRawMutex, ExprEvent, EXPR_QUEUE_DEPTH>;
 /// Receiver half of an [`ExprChannel`] — held by the router.
 pub type ExprReceiver = Receiver<'static, CriticalSectionRawMutex, ExprEvent, EXPR_QUEUE_DEPTH>;
+
+// ── Calibration handshake (settings menu ↔ sampler task) ────────────────
+// Two tiny shared cells, not channels: the menu wants the *latest* raw
+// reading (not a queue), and pushes a new calibration the sampler applies on
+// its next tick. Blocking critical-section mutexes — both accessors are
+// synchronous and the critical sections are a single load/store.
+
+/// Latest raw ADC reading per pedal, published by [`expression_task`] every
+/// sample. The calibration wizard reads this to capture min/max endpoints.
+pub static LATEST_RAW: BlockingMutex<CriticalSectionRawMutex, Cell<[u16; PEDAL_COUNT]>> =
+    BlockingMutex::new(Cell::new([0; PEDAL_COUNT]));
+
+/// A calibration pushed by the menu; [`expression_task`] applies it (live,
+/// without a reboot) on its next tick and clears it. `None` = nothing pending.
+pub static LIVE_CAL: BlockingMutex<CriticalSectionRawMutex, Cell<Option<[Calibration; PEDAL_COUNT]>>> =
+    BlockingMutex::new(Cell::new(None));
 
 // ── Calibration & curve ────────────────────────────────────────────────
 
@@ -381,6 +400,11 @@ impl CalibrationWizard {
         self.phase
     }
 
+    /// The pedal index currently being calibrated (`0` or `1`).
+    pub fn pedal(&self) -> usize {
+        self.pedal
+    }
+
     /// The captured `(pedal, min, max)` once `Complete` *and* valid
     /// (`max > min`). Returns `None` if the endpoints were captured
     /// backwards or the pedal didn't move — the caller should restart the
@@ -471,9 +495,19 @@ pub async fn expression_task(mut inputs: ExpressionInputs, sender: ExprSender) {
 
     let mut ticker = Ticker::every(Duration::from_hz(SAMPLE_RATE_HZ));
     loop {
+        // Apply a calibration the menu pushed since the last tick (live, no
+        // reboot). Cleared once consumed.
+        if let Some(cals) = LIVE_CAL.lock(|c| c.take()) {
+            for (pedal, cal) in pedals.iter_mut().zip(cals.iter()) {
+                pedal.proc.set_calibration(cal.min, cal.max);
+            }
+        }
+
+        let mut raws = LATEST_RAW.lock(|c| c.get());
         for (i, pedal) in pedals.iter_mut().enumerate() {
             match adc.read(&mut pedal.ch).await {
                 Ok(raw) => {
+                    raws[i] = raw; // publish for the calibration wizard
                     if let Some(value) = pedal.proc.push(raw) {
                         let event = ExprEvent {
                             pedal: i as u8,
@@ -487,6 +521,7 @@ pub async fn expression_task(mut inputs: ExpressionInputs, sender: ExprSender) {
                 Err(e) => warn!("expr: ADC read error on pedal {}: {:?}", i as u8, e),
             }
         }
+        LATEST_RAW.lock(|c| c.set(raws));
         ticker.next().await;
     }
 }
