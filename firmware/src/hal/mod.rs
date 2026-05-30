@@ -8,15 +8,15 @@
 //! a peripheral from elsewhere, send it a message.
 //!
 //! Landed:
+//! - [`buttons`] — polled, debounced footswitch scanner →
+//!   [`crate::events::ButtonEvent`].
 //! - [`encoder`] — quadrature rotary encoder + debounced push-button,
 //!   emitting [`crate::events::EncoderEvent`].
 //! - [`expression`] — the two ADC expression pedals (GP27/GP28) →
 //!   [`crate::events::ExprEvent`].
 //! - [`leds`] — drives the 30-pixel WS2812 chain on GP7 from `LedFrame`s.
-//!
-//! Planned (per `ARCHITECTURE.md`): `buttons`. It slots in here as a sibling
-//! module, with its own `*_task` and channel aliases.
 
+pub mod buttons;
 pub mod encoder;
 pub mod expression;
 pub mod leds;

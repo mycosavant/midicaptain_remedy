@@ -76,11 +76,22 @@ pub struct LedFrame {
 
 /// A render request to the display task. Grows into modes (status, tuner,
 /// menu, value bar) as features land — add variants, keep the router's
-/// match exhaustive.
+/// match exhaustive. The `&'static str` payloads come from the baked-in
+/// `config` (also `'static`), so this stays `Copy`.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum DisplayCmd {
-    /// A switch was pressed; show its name and running press count.
-    /// (Placeholder behaviour from the skeleton; real action dispatch
-    /// replaces this when the config/page system lands.)
-    Pressed { index: u8, count: u32 },
+    /// The active page changed (or initial paint): show its name and
+    /// 1-based position (`index` of `total`).
+    Page {
+        name: &'static str,
+        index: u8,
+        total: u8,
+    },
+    /// A button was actuated: briefly show its label, plus on/off when the
+    /// button is a toggle (`toggle = false` hides the state suffix).
+    Action {
+        label: &'static str,
+        toggle: bool,
+        on: bool,
+    },
 }

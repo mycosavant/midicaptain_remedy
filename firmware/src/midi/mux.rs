@@ -46,6 +46,16 @@ pub type MidiCmdChannel = Channel<CriticalSectionRawMutex, MidiCmd, CMD_DEPTH>;
 /// Channel carrying owned, reassembled/outbound SysEx messages.
 pub type SysExChannel = Channel<CriticalSectionRawMutex, SysEx, SYSEX_DEPTH>;
 
+// Endpoint aliases the app wires the router to. (`Sender`/`Receiver` are
+// fully-pathed here because this module already imports the USB-MIDI
+// `Sender`/`Receiver` under those names.)
+/// Receiver the router reads normalised inbound MIDI from.
+pub type MidiRxReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, MidiRx, RX_DEPTH>;
+/// Sender the router pushes outbound channel-voice commands to.
+pub type MidiCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, MidiCmd, CMD_DEPTH>;
+/// Sender the router pushes outbound SysEx to (drained by [`out_loop`]).
+pub type SysExSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, SysEx, SYSEX_DEPTH>;
+
 /// Worst-case USB packet count for one [`MAX_SYSEX`]-byte SysEx:
 /// `ceil(MAX_SYSEX / 3)` (three SysEx bytes per packet).
 const USB_PACKETS_MAX: usize = MAX_SYSEX / 3 + 1;
