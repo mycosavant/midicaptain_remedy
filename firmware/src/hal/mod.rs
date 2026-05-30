@@ -7,7 +7,10 @@
 //!
 //! Landed so far:
 //! - [`leds`] — drives the 30-pixel WS2812 chain on GP7 from `LedFrame`s.
+//! - [`encoder`] — quadrature rotary encoder + debounced push-button,
+//!   emitting [`crate::events::EncoderEvent`].
 //!
-//! Planned (one per follow-up session): `buttons`, `encoder`, `expression`.
+//! Planned (one per follow-up session): `buttons`, `expression`.
 
+pub mod encoder;
 pub mod leds;
