@@ -55,8 +55,14 @@ PIO driver streams them in physical order):
 | DC | GP12 |
 | Backlight (PWM) | GP8 |
 
-Display mounted upside-down: rotate 180° in software when initializing
-the `mipidsi` driver. SPI baud target: 24 MHz.
+Panel is physically mounted inverted in the chassis. **Verified on
+hardware:** under `mipidsi` 0.10 the upright, centred result is
+`Rotation::Deg0` + `display_offset(0, 0)` — *not* the CircuitPython
+recipe (`rotation=180` + `rowstart=80`). mipidsi keeps the offset
+constant across rotation, so the naive CP translation (`Deg180` +
+offset 80) renders inverted with an 80-row stale band. SPI baud: 24 MHz.
+Note: the case bezel obscures the outermost ~1–2px ring — keep a small
+safe margin in UI layouts.
 
 ### DIN MIDI (UART0 alt 2)
 

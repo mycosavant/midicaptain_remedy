@@ -3,10 +3,17 @@
 //! Thin facade around `mipidsi::Display` that bakes in the MIDI Captain's
 //! quirks so the rest of the firmware doesn't have to remember them:
 //!
-//! - **80-row Y offset** (`rowstart=80`). The ST7789 controller addresses
-//!   240×320 of RAM; this 240×240 panel ships an 80-row offset at the top.
-//!   Without this, image data lands clipped or scrolled.
-//! - **180° rotation**. The display is chassis-mounted upside-down.
+//! - **No display offset + `Deg0` rotation** — geometry verified on
+//!   hardware 2026-05-30. The panel is physically mounted inverted in the
+//!   chassis. The CircuitPython driver (`adafruit_st7789`) expresses the
+//!   correction as `rotation=180` + `rowstart=80`; **do NOT copy those
+//!   numbers into mipidsi.** mipidsi 0.10 has a different convention: it
+//!   keeps `display_offset` constant across rotation (recomputing the
+//!   address window internally), so the 240×240 window centres at
+//!   `display_offset(0, 0)`, and `Rotation::Deg0` already reads upright on
+//!   this inverted panel. Using mipidsi `Deg180` + offset 80 (the naive CP
+//!   translation) lands the image inverted with an 80-row (⅓-screen) band
+//!   of stale GRAM — the exact bug seen during bring-up.
 //! - **24 MHz SPI clock**. Matches the CircuitPython firmware exactly
 //!   (see `remedy/lib/display.py::_init_display`); going faster needs
 //!   signal-integrity validation on the flex cable.
@@ -126,8 +133,11 @@ pub fn init(peri: DisplayPeripherals) -> Result<(RemedyDisplay, Output<'static>)
     let mut delay = Delay;
     let display = Builder::new(ST7789, di)
         .display_size(pins::DISPLAY_WIDTH, pins::DISPLAY_HEIGHT)
-        .display_offset(0, 80) // 240×240 panel maps to rows 80..320 of the controller
-        .orientation(Orientation::new().rotate(Rotation::Deg180))
+        // Geometry verified on hardware — see module header. offset (0,0)
+        // centres the 240×240 window; Deg0 reads upright on this
+        // chassis-inverted panel under mipidsi's convention.
+        .display_offset(0, 0)
+        .orientation(Orientation::new().rotate(Rotation::Deg0))
         .init(&mut delay)
         .map_err(|_| InitError::Driver)?;
 

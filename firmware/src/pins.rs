@@ -115,7 +115,12 @@ pub const TFT_BACKLIGHT_PIN: u8 = 8; // PWM-capable
 
 pub const DISPLAY_WIDTH:    u16  = 240;
 pub const DISPLAY_HEIGHT:   u16  = 240;
-pub const DISPLAY_ROTATION_DEG: u16 = 180; // chassis-mounted upside down
+// Panel is physically chassis-inverted, but mipidsi 0.10's rotation/offset
+// convention differs from CircuitPython's: verified on hardware that
+// Rotation::Deg0 + display_offset(0,0) reads upright and centred. (CP's
+// adafruit_st7789 uses rotation=180 + rowstart=80 for the same result — do
+// not copy those numbers into mipidsi.) See display.rs module header.
+pub const DISPLAY_ROTATION_DEG: u16 = 0;
 pub const DISPLAY_SPI_BAUD: u32  = 24_000_000;
 
 // ── DIN MIDI (5-pin) over UART0 ────────────────────────────────────────
