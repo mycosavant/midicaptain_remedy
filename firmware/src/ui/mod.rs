@@ -25,9 +25,11 @@
 pub mod element;
 pub mod palette;
 pub mod text_panel;
+pub mod tuner;
 pub mod value_bar;
 
 pub use element::Widget;
 pub use palette::{Color, Palette};
 pub use text_panel::TextPanel;
+pub use tuner::TunerView;
 pub use value_bar::ValueBar;

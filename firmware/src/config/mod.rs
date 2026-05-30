@@ -87,7 +87,9 @@ pub enum Action {
     PageNext,
     /// Return to the previous page (wraps).
     PagePrev,
-    /// Toggle the tuner display mode (Wave 3 — no-op until the tuner lands).
+    /// Enter the chromatic tuner display mode (sends CC#25 = 127 to start the
+    /// amp's tuner). Leaving the tuner is a mode-level gesture, not an action —
+    /// see `app::Router`.
     TunerToggle,
 }
 
@@ -188,11 +190,17 @@ const PAGE_DEFAULT: Page = Page {
         button("PRE2", color::WHITE, Action::ProgramChange { program: 1 }),
         button("PRE3", color::WHITE, Action::ProgramChange { program: 2 }),
         button("PRE4", color::WHITE, Action::ProgramChange { program: 3 }),
-        // A..D → CC toggles (FX on/off), with LED on/off feedback.
+        // A..D → CC toggles (FX on/off), with LED on/off feedback. D also
+        // long-presses into the tuner.
         button("FX1", color::GREEN, toggle(80)),
         button("FX2", color::BLUE, toggle(81)),
         button("FX3", color::AMBER, toggle(82)),
-        button("FX4", color::PURPLE, toggle(83)),
+        ButtonConfig {
+            label: "FX4",
+            color: color::PURPLE,
+            on_press: toggle(83),
+            on_long_press: Action::TunerToggle,
+        },
         // UP/DOWN → PC on press, page nav on long-press.
         ButtonConfig {
             label: "BANK+",
@@ -216,7 +224,14 @@ const PAGE_KATANA: Page = Page {
         button("CLEAN", color::GREEN, Action::Sysex(SysexCmd::AmpType(1))),
         button("CRUNCH", color::AMBER, Action::Sysex(SysexCmd::AmpType(2))),
         button("LEAD", color::RED, Action::Sysex(SysexCmd::AmpType(3))),
-        button("BROWN", color::PURPLE, Action::Sysex(SysexCmd::AmpType(4))),
+        // BROWN amp on press; long-press into the tuner (consistent with D on
+        // the default page).
+        ButtonConfig {
+            label: "BROWN",
+            color: color::PURPLE,
+            on_press: Action::Sysex(SysexCmd::AmpType(4)),
+            on_long_press: Action::TunerToggle,
+        },
         button("CH1", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(1))),
         button("CH2", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(2))),
         button("CH3", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(3))),

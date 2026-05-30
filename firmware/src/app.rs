@@ -15,7 +15,7 @@
 //! It is the **single owner** of that state; the rest of the system
 //! influences it only by sending events to [`router_task`].
 
-use defmt::{info, warn};
+use defmt::warn;
 use embassy_futures::select::{select4, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
@@ -30,6 +30,7 @@ use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
 use crate::pins;
 use crate::storage::{Settings, Storage};
+use crate::tuner::TunerState;
 
 /// Press duration at/above which a release counts as a long-press. Used both
 /// for footswitches (short vs long action) and the encoder push (enter/exit
@@ -42,6 +43,11 @@ const LONG_PRESS: Duration = Duration::from_millis(500);
 /// per-page bindings; baked in for v1.
 const ENCODER_CC: u8 = 7;
 const EXPR_CC: [u8; 2] = [1, 7];
+
+/// CC that toggles the connected device's tuner. CC#25 = 127 enters, 0 exits
+/// (matches `remedy/lib/tuner.py`'s default `toggle_cc`). The amp then streams
+/// Note On + Pitch Bend back, which drives the [`TunerState`].
+const TUNER_CC: u8 = 25;
 
 // ── Display channel (router → display task) ────────────────────────────
 // Owned here because the router is the producer; the bin's display task
@@ -63,6 +69,10 @@ enum Mode {
     Performance,
     /// Settings menu: encoder navigates/edits; footswitches drive calibration.
     Menu,
+    /// Chromatic tuner: the screen shows the amp's pitch readout; inbound
+    /// Note/Pitch-Bend update it. Any footswitch release — or an encoder
+    /// hold — leaves back to performance.
+    Tuner,
 }
 
 /// The event router + application state.
@@ -75,6 +85,8 @@ pub struct Router {
     storage: Storage,
     mode: Mode,
     menu: Menu,
+    /// Tuner readout (driven by inbound MIDI while in [`Mode::Tuner`]).
+    tuner: TunerState,
     /// Accumulated encoder-driven value for [`ENCODER_CC`] (`0..=127`).
     enc_value: u8,
     /// Per-CC toggle state (on/off), indexed by CC number. Cleared on page
@@ -109,6 +121,7 @@ impl Router {
             storage,
             mode: Mode::Performance,
             menu: Menu::new(),
+            tuner: TunerState::new(),
             enc_value: 0,
             toggles: [false; 128],
             press_at: [None; buttons::COUNT],
@@ -187,6 +200,14 @@ impl Router {
                     self.apply_menu_outcome(outcome).await;
                 }
             }
+            // In the tuner any footswitch leaves. Act on release (not press)
+            // so the same switch that *entered* via long-press can exit on its
+            // next tap without that tap's release also firing a page action.
+            Mode::Tuner => {
+                if !ev.pressed {
+                    self.exit_tuner();
+                }
+            }
         }
     }
 
@@ -255,7 +276,10 @@ impl Router {
                 self.change_page((self.page + n - 1) % n);
             }
             Action::PageChange(p) => self.change_page(p as usize),
-            Action::TunerToggle => info!("router: tuner toggle (Wave 3)"),
+            // `dispatch` only runs in performance mode, so this always *enters*
+            // the tuner; leaving is handled by the footswitch/encoder in
+            // `Mode::Tuner` (see `on_button` / `on_encoder`).
+            Action::TunerToggle => self.enter_tuner(),
         }
     }
 
@@ -287,6 +311,8 @@ impl Router {
                     let outcome = self.menu.turn(delta, &mut self.settings);
                     self.apply_menu_outcome(outcome).await;
                 }
+                // The tuner is read-only; rotation does nothing.
+                Mode::Tuner => {}
             },
             EncoderEvent::Press => self.enc_press_at = Some(Instant::now()),
             EncoderEvent::Release => {
@@ -296,7 +322,7 @@ impl Router {
                     .map(|t| Instant::now().saturating_duration_since(t) >= LONG_PRESS)
                     .unwrap_or(false);
                 if long {
-                    self.toggle_menu().await;
+                    self.on_encoder_hold().await;
                 } else if matches!(self.mode, Mode::Menu) {
                     let outcome = self.menu.press();
                     self.apply_menu_outcome(outcome).await;
@@ -319,9 +345,18 @@ impl Router {
         });
     }
 
+    /// Dispatch inbound device MIDI. In the tuner it drives the pitch readout;
+    /// otherwise it keeps toggle state + LED feedback in sync with the amp.
+    fn on_midi_rx(&mut self, m: MidiRx) {
+        match self.mode {
+            Mode::Tuner => self.on_midi_rx_tuner(m),
+            _ => self.sync_cc(m),
+        }
+    }
+
     /// Sync toggle state (and LED feedback) from inbound device CC —
     /// bidirectional sync, so the board reflects the amp's real state.
-    fn on_midi_rx(&mut self, m: MidiRx) {
+    fn sync_cc(&mut self, m: MidiRx) {
         if let MidiRx::ControlChange { cc, value, .. } = m {
             let on = value > 63;
             if self.toggles[cc as usize] != on {
@@ -331,19 +366,78 @@ impl Router {
         }
     }
 
-    // ── menu mode ──────────────────────────────────────────────────────
-
-    /// Enter or leave the settings menu (encoder long-press).
-    async fn toggle_menu(&mut self) {
-        match self.mode {
-            Mode::Performance => {
-                self.mode = Mode::Menu;
-                self.menu.enter();
-                let cmd = self.menu.display_cmd(&self.settings);
-                let _ = self.display.try_send(cmd);
+    /// Feed the tuner from the amp's Note On (which note) + Pitch Bend (cents).
+    /// A Note Off — or a zero-velocity Note On — clears the readout.
+    fn on_midi_rx_tuner(&mut self, m: MidiRx) {
+        let changed = match m {
+            MidiRx::Note { note, velocity, on, .. } => {
+                if on && velocity > 0 {
+                    self.tuner.update_note(note);
+                } else {
+                    self.tuner.clear_note();
+                }
+                true
             }
-            Mode::Menu => self.leave_menu().await,
+            MidiRx::PitchBend { value, .. } => {
+                self.tuner.update_pitch_bend(value);
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            let cmd = self.tuner.display_cmd();
+            let _ = self.display.try_send(cmd);
         }
+    }
+
+    // ── mode transitions ───────────────────────────────────────────────
+
+    /// Encoder long-press: enter the menu from performance, or leave the
+    /// current mode (menu → save + performance, tuner → performance).
+    async fn on_encoder_hold(&mut self) {
+        match self.mode {
+            Mode::Performance => self.enter_menu(),
+            Mode::Menu => self.leave_menu().await,
+            Mode::Tuner => self.exit_tuner(),
+        }
+    }
+
+    /// Enter the settings menu (from performance).
+    fn enter_menu(&mut self) {
+        self.mode = Mode::Menu;
+        self.menu.enter();
+        let cmd = self.menu.display_cmd(&self.settings);
+        let _ = self.display.try_send(cmd);
+    }
+
+    /// Enter the tuner: ask the amp to start its tuner (CC#25 = 127), switch
+    /// modes, and paint the initial (empty) readout. The amp's Note/Pitch-Bend
+    /// stream then drives [`Self::on_midi_rx_tuner`].
+    fn enter_tuner(&mut self) {
+        let channel = self.wire_channel();
+        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
+            channel,
+            cc: TUNER_CC,
+            value: 127,
+        });
+        self.mode = Mode::Tuner;
+        self.tuner.reset();
+        let cmd = self.tuner.display_cmd();
+        let _ = self.display.try_send(cmd);
+    }
+
+    /// Leave the tuner: tell the amp to stop (CC#25 = 0) and restore the
+    /// performance page (which repaints the normal screen + LED brightness).
+    fn exit_tuner(&mut self) {
+        let channel = self.wire_channel();
+        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
+            channel,
+            cc: TUNER_CC,
+            value: 0,
+        });
+        self.mode = Mode::Performance;
+        self.tuner.reset();
+        self.refresh_page();
     }
 
     /// Leave the menu: persist settings, restore the performance page (which

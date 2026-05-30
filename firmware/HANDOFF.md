@@ -124,9 +124,16 @@ Features (CP refs): **settings menu** (`menu.py`), **tuner** (`tuner.py`),
   *Deferred:* **display brightness** (needs a PWM backlight — `display.rs` is
   still GPIO-high) and live-updating raw readout while moving the pedal (the
   raw shown refreshes only on input events, CP-faithful).
-- *Tuner* — `ui::TunerView` (big note + cents bar; `ValueBar` is close) +
-  state from `MidiRx::Note`/`PitchBend`. `TunerToggle` action already exists
-  (send CC#25, enter Tuner mode).
+- *Tuner* — **LANDED** (`src/tuner.rs` state + `src/ui/tuner.rs` `TunerView`).
+  Cooperative: `TunerToggle` (long-press **D** on either page) sends CC#25 = 127
+  and enters `Mode::Tuner`; the amp streams Note On + Pitch Bend, which
+  `Router::on_midi_rx_tuner` maps to note + cents and pushes as
+  `DisplayCmd::Tuner`. `TunerView` paints the note name, cents text, and a
+  needle bar (green in-tune / yellow close / red sharp / blue flat), delta-
+  painting the needle. Any footswitch release — or an encoder hold — sends
+  CC#25 = 0 and returns to performance. The display task wipes the screen on
+  the Normal↔Tuner layout switch (`Screen` enum). *Deferred:* a larger note
+  glyph (only `FONT_10X20` is built-in) and cents smoothing (CP averaged 3).
 - *Device sync* — boot/connect RQ1 sweep + a Katana DT1 response parser in
   `midi/katana.rs`; updates toggle LED states.
 - *Webapp sync — DEFERRED.* The existing webapp (on `main`, not the port) is
@@ -137,9 +144,11 @@ Features (CP refs): **settings menu** (`menu.py`), **tuner** (`tuner.py`),
   (a cross-branch effort). Scope it only when that's on the table.
 
 Recommended sequence: foundation → settings menu (retires the UP+DOWN reset
-hack) → tuner → device sync. Menu + tuner share the display-mode surface;
-keep each mode self-contained (own state + `*View` widget) so they merge
-cleanly.
+hack) → tuner → **device sync (next)**. Menu + tuner both landed as
+self-contained modes (own state module + `*View` widget) on the shared
+display-mode surface — follow the same shape for device sync. Its one
+remaining foundation dependency is the `SYSEX_IN`→router `select4`→`select5`
+wiring noted above, plus a Katana DT1 response parser in `midi/katana.rs`.
 
 A note on cost: parallel subagents editing the *same* files conflict. Keep
 new work in **new files** and integration **serial**. Use

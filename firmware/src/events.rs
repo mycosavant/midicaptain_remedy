@@ -113,6 +113,15 @@ pub enum DisplayCmd {
         step: CalStep,
         raw: u16,
     },
+    /// Chromatic tuner readout. The board has no audio input — the amp
+    /// detects pitch and streams Note On + Pitch Bend back (see `tuner.py`).
+    /// `note` is the MIDI note number (`None` = nothing detected, shown as
+    /// `--`); `cents` is the deviation already mapped from 14-bit pitch bend
+    /// (negative = flat, positive = sharp).
+    Tuner {
+        note: Option<u8>,
+        cents: i16,
+    },
 }
 
 /// How a [`DisplayCmd::Menu`] value is rendered.
