@@ -98,4 +98,41 @@ pub enum DisplayCmd {
         toggle: bool,
         on: bool,
     },
+    /// Settings-menu item view (single item at a time): its `title`, current
+    /// `value` rendered per `kind`, and whether it's being edited.
+    Menu {
+        title: &'static str,
+        value: u16,
+        kind: MenuKind,
+        editing: bool,
+    },
+    /// Calibration-wizard step for `pedal` (`0`/`1`): the instruction and the
+    /// pedal's current raw ADC reading (so the user sees it respond).
+    Cal {
+        pedal: u8,
+        step: CalStep,
+        raw: u16,
+    },
+}
+
+/// How a [`DisplayCmd::Menu`] value is rendered.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum MenuKind {
+    /// Plain integer (e.g. MIDI channel).
+    Int,
+    /// Percentage (append `%`).
+    Percent,
+    /// No value — an action item (e.g. "Cal Pedal 1", "Exit").
+    Action,
+}
+
+/// Which step of the calibration wizard a [`DisplayCmd::Cal`] is showing.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CalStep {
+    /// Capture the heel (minimum).
+    Min,
+    /// Capture the toe (maximum).
+    Max,
+    /// Captured + saved.
+    Done,
 }
