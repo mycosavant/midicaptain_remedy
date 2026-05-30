@@ -20,4 +20,5 @@ pub mod menu;
 pub mod midi;
 pub mod pins;
 pub mod storage;
+pub mod tuner;
 pub mod ui;

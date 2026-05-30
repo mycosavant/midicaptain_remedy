@@ -58,7 +58,7 @@ use midicaptain_firmware::hal::buttons;
 use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
 use midicaptain_firmware::storage::Storage;
-use midicaptain_firmware::ui::{Palette, TextPanel, Widget};
+use midicaptain_firmware::ui::{Palette, TextPanel, TunerView, Widget};
 use {defmt_rtt as _, panic_probe as _};
 
 type UsbDriver = Driver<'static, USB>;
@@ -261,9 +261,19 @@ async fn out_task(usb_tx: UsbMidiTx<'static, UsbDriver>, din_tx: BufferedUartTx)
     mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT).await
 }
 
-/// Sole owner of the ST7789. Renders a title bar (active page name) and a
-/// status panel (page position, or the most recent action), updated on each
-/// [`DisplayCmd`].
+/// Which on-screen layout the display task last painted. The normal layout
+/// (title + status panels) and the tuner layout occupy different regions, so a
+/// switch between them wipes the screen first — otherwise the old layout's
+/// pixels would linger around the new one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Normal,
+    Tuner,
+}
+
+/// Sole owner of the ST7789. Renders either the normal layout — a title bar
+/// (active page name) and a status panel (page position / latest action /
+/// menu) — or the tuner layout, switching on each [`DisplayCmd`].
 #[embassy_executor::task]
 async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, commands: app::DisplayReceiver) {
     let _ = display.clear(Palette::BLACK.to_rgb565());
@@ -290,8 +300,31 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
     status.set_text("booting...");
     let _ = status.render(&mut display);
 
+    let mut tuner = TunerView::new(&FONT_10X20);
+    let mut screen = Screen::Normal;
+
     loop {
-        match commands.receive().await {
+        let cmd = commands.receive().await;
+
+        // Layout transition: wipe the screen and force the incoming layout's
+        // widgets to repaint from scratch.
+        let want = match cmd {
+            DisplayCmd::Tuner { .. } => Screen::Tuner,
+            _ => Screen::Normal,
+        };
+        if want != screen {
+            let _ = display.clear(Palette::BLACK.to_rgb565());
+            match want {
+                Screen::Normal => {
+                    title.mark_dirty();
+                    status.mark_dirty();
+                }
+                Screen::Tuner => tuner.mark_dirty(),
+            }
+            screen = want;
+        }
+
+        match cmd {
             DisplayCmd::Page { name, index, total } => {
                 title.set_text(name);
                 let _ = title.render(&mut display);
@@ -334,6 +367,10 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                 };
                 status.set_text(&line);
                 let _ = status.render(&mut display);
+            }
+            DisplayCmd::Tuner { note, cents } => {
+                tuner.set(note, cents);
+                let _ = tuner.render(&mut display);
             }
         }
     }
