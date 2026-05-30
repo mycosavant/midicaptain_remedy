@@ -59,6 +59,17 @@ heapless = "0.9"
 # `critical-section`. Required because `static_cell` and several embassy
 # crates lean on AtomicBool::compare_exchange.
 portable-atomic = { version = "1", features = ["critical-section"] }
+# Flash-backed key-value settings store (src/storage.rs). `sequential-storage`
+# is a wear-levelling KV map over NOR flash; we use only its core no_std
+# `map` + `cache` modules, so default features (incl. `std`) stay off.
+# embedded-storage{,-async} are pulled in transitively by embassy-rp but named
+# directly here because storage.rs's blocking->async flash shim implements/uses
+# their NorFlash traits (embassy-rp's blocking `Flash` already implements the
+# blocking side; the shim adapts it to the async side the KV map consumes,
+# which avoids reserving a DMA channel + interrupt for the store).
+sequential-storage = { version = "7.2.0", default-features = false }
+embedded-storage = "0.3.1"
+embedded-storage-async = "0.4.1"
 
 # ─── Release profile ─────────────────────────────────────────────────────
 # LTO + opt-level=s keeps RP2040 flash usage low; debug=true ships symbols
