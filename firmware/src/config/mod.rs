@@ -21,7 +21,7 @@
 //! chain position so the router can build an [`crate::events::LedFrame`]
 //! from per-button colours.
 
-use crate::events::LedColor;
+use crate::events::{HidReport, LedColor};
 use crate::pins::Switch;
 
 /// Number of footswitch slots on a page (matches the buttons task).
@@ -164,6 +164,16 @@ pub enum Action {
     ///
     /// NOTE: append-only — see [`CcValue::Momentary`].
     Cycle(u8),
+    /// Emit a USB-HID report on the host — a keyboard keystroke (with optional
+    /// modifiers) or a consumer-control / media key. Fire-and-forget: a press
+    /// sends the "tap" (press then release) via the HID task; there is no toggle
+    /// or selection state, so the LED just shows the button's base colour. The
+    /// HID interface is always present on the composite device, so this works
+    /// regardless of which page or config is loaded.
+    ///
+    /// NOTE: append-only — see [`CcValue::Momentary`]. [`HidReport`] is itself
+    /// append-only (see its docs).
+    Hid(HidReport),
 }
 
 impl Action {
@@ -268,6 +278,39 @@ pub mod color {
     pub const WHITE: LedColor = LedColor { r: L, g: L, b: L };
 }
 
+/// USB-HID constants used by the baked demo page ([`PAGE_HID`]).
+///
+/// On-device we keep keycodes / modifiers / consumer usages as **raw integers**
+/// (an [`HidReport`] carries `u8`/`u16`), exactly as CC numbers are raw — the
+/// friendly-name table (e.g. "Space", "Ctrl+Z", "Play/Pause") is the webapp's
+/// job, not the firmware's. These named consts exist only to make the demo page
+/// legible; they are a tiny subset of the USB HID Usage Tables.
+pub mod hid {
+    /// Keyboard modifier bitmask bits (USB HID, left-hand modifiers). OR them
+    /// together for combos (e.g. `CTRL | SHIFT`).
+    pub mod mods {
+        pub const NONE: u8 = 0x00;
+        /// Left Ctrl.
+        pub const CTRL: u8 = 0x01;
+        /// Left Shift.
+        pub const SHIFT: u8 = 0x02;
+    }
+    /// Keyboard usage IDs (USB HID Usage Page 0x07, "Keyboard/Keypad").
+    pub mod key {
+        pub const ENTER: u8 = 0x28;
+        pub const SPACE: u8 = 0x2C;
+        /// Letter `Z` — paired with [`super::mods::CTRL`] for Undo.
+        pub const Z: u8 = 0x1D;
+    }
+    /// Consumer-control usage IDs (USB HID Usage Page 0x0C, "Consumer").
+    pub mod consumer {
+        pub const PLAY_PAUSE: u16 = 0x00CD;
+        pub const MUTE: u16 = 0x00E2;
+        pub const VOLUME_UP: u16 = 0x00E9;
+        pub const VOLUME_DOWN: u16 = 0x00EA;
+    }
+}
+
 // ── Baked-in default configuration ─────────────────────────────────────
 // Two pages. Page 0 ports remedy/config/pages/default.toml (CC toggles +
 // PC presets + nav). Page 1 demonstrates the SysEx path (amp types + preset
@@ -343,7 +386,30 @@ const PAGE_KATANA: Page = Page {
     ],
 };
 
-const PAGES: [Page; 2] = [PAGE_DEFAULT, PAGE_KATANA];
+/// Page 2 — USB-HID demo. Footswitches type on / send media keys to the host
+/// (the device enumerates a keyboard + consumer-control HID interface alongside
+/// MIDI + CDC). Demonstrates plain keys, a modifier combo (Ctrl+Z), and
+/// consumer/media usages. UP/DOWN keep page nav so you can leave the page.
+const PAGE_HID: Page = Page {
+    name: "HID",
+    buttons: [
+        // Keyboard keys (Usage Page 0x07): plain, then modifier combos.
+        hid_key("SPACE", color::WHITE, hid::key::SPACE, hid::mods::NONE),
+        hid_key("ENTER", color::WHITE, hid::key::ENTER, hid::mods::NONE),
+        hid_key("UNDO", color::CYAN, hid::key::Z, hid::mods::CTRL),
+        hid_key("REDO", color::CYAN, hid::key::Z, hid::mods::CTRL | hid::mods::SHIFT),
+        // Consumer-control / media keys (Usage Page 0x0C).
+        hid_consumer("PLAY", color::GREEN, hid::consumer::PLAY_PAUSE),
+        hid_consumer("VOL+", color::BLUE, hid::consumer::VOLUME_UP),
+        hid_consumer("VOL-", color::BLUE, hid::consumer::VOLUME_DOWN),
+        hid_consumer("MUTE", color::AMBER, hid::consumer::MUTE),
+        // Page nav (so the page is escapable without the encoder).
+        button("PAGE+", color::PURPLE, Action::PageNext),
+        button("PAGE-", color::PURPLE, Action::PagePrev),
+    ],
+};
+
+const PAGES: [Page; 3] = [PAGE_DEFAULT, PAGE_KATANA, PAGE_HID];
 
 /// Shared cycle pool. Cycle 0 (referenced by page-0 "LVL") steps CC 82 through
 /// three levels, with the long press resetting to the first.
@@ -398,6 +464,23 @@ const fn toggle(cc: u8) -> Action {
     }
 }
 
+/// Helper: a button that sends a keyboard keystroke (Usage Page 0x07 `keycode`
+/// with a `modifiers` bitmask — see [`hid::mods`]). No long-press, ungrouped.
+const fn hid_key(
+    label: &'static str,
+    color: LedColor,
+    keycode: u8,
+    modifiers: u8,
+) -> ButtonConfig {
+    button(label, color, Action::Hid(HidReport::Key { keycode, modifiers }))
+}
+
+/// Helper: a button that sends a consumer-control / media usage (Usage Page
+/// 0x0C — see [`hid::consumer`]). No long-press, ungrouped.
+const fn hid_consumer(label: &'static str, color: LedColor, usage: u16) -> ButtonConfig {
+    button(label, color, Action::Hid(HidReport::Consumer { usage }))
+}
+
 /// Helper: a button bound to cycle `index` (in the config's cycle pool), no
 /// long-press of its own, ungrouped.
 const fn cycle_button(label: &'static str, color: LedColor, index: u8) -> ButtonConfig {
@@ -448,16 +531,17 @@ pub const NAME_CAP: usize = 16;
 /// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
 /// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
 /// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action` + `group` (1)
-/// - `Action`     → 1-byte discriminant + ≤3-byte payload (`MidiCc{ cc, CcValue::Fixed }`)
+/// - `Action`     → 1-byte discriminant + ≤4-byte payload (`Hid(Consumer{ usage: u16 })`)
 /// - `ThruRoutes` → 4 × `bool` (1 byte each)
 /// - `Vec<CycleDef, MAX_CYCLES>` → 1-byte length varint + cycles
 /// - `CycleDef`   → `Vec<StepAction, MAX_STEPS>` (1-byte len + steps) + `CycleLong` (1)
 /// - `StepAction` → 1-byte discriminant + ≤2-byte payload (`MidiCc{ cc, value }`)
 pub const MAX_SERIALIZED_LEN: usize = {
     // 1-byte enum discriminant + largest variant payload.
-    // `MidiCc { cc: u8, value: CcValue }` = cc(1) + CcValue(disc 1 + Fixed u8 1) = 3.
-    // (`Action::Cycle(u8)` is only 1+1 = 2, so `MidiCc` stays the largest.)
-    const ACTION_MAX: usize = 1 + 3;
+    // `Hid(HidReport::Consumer { usage: u16 })` = HidReport disc(1) + a u16, which
+    // postcard varint-encodes in up to 3 bytes = 4 — the largest payload.
+    // (`MidiCc { cc, CcValue::Fixed }` = 3; `Cycle(u8)` = 1; both smaller.)
+    const ACTION_MAX: usize = 1 + 4;
     // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
     const BUTTON_MAX: usize =
         (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX + 1 /* group u8 */;

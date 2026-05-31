@@ -25,7 +25,7 @@ use crate::config::{self, Action, CcValue, CycleLong, RuntimeConfig, StepAction,
 use crate::events::{
     ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd, MidiRx,
 };
-use crate::hal::{buttons, encoder, expression, leds};
+use crate::hal::{buttons, encoder, expression, hid, leds};
 use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
 use crate::pins;
@@ -182,6 +182,8 @@ pub struct Router {
     leds: leds::LedSender,
     midi_cmd: mux::MidiCmdSender,
     sysex_out: mux::SysExSender,
+    /// Outbound USB-HID reports (keyboard / consumer control) → the HID task.
+    hid: hid::HidSender,
 }
 
 impl Router {
@@ -197,6 +199,7 @@ impl Router {
         leds: leds::LedSender,
         midi_cmd: mux::MidiCmdSender,
         sysex_out: mux::SysExSender,
+        hid: hid::HidSender,
     ) -> Self {
         Self {
             config,
@@ -219,6 +222,7 @@ impl Router {
             leds,
             midi_cmd,
             sysex_out,
+            hid,
         }
     }
 
@@ -509,6 +513,13 @@ impl Router {
             // handled in `on_button_perf` (the only place an `Action::Cycle` is
             // meaningful). In any other slot it is inert.
             Action::Cycle(_) => {}
+            // Hand the HID report to the HID task, which writes the press +
+            // release tap. Fire-and-forget (no toggle/selection state); a full
+            // queue drops the tap rather than blocking the router.
+            Action::Hid(report) => {
+                let _ = self.hid.try_send(report);
+                self.announce(label);
+            }
         }
     }
 

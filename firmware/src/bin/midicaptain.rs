@@ -41,6 +41,9 @@ use embassy_rp::uart::{
 };
 use embassy_rp::usb::{Driver, InterruptHandler as UsbIrq};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
+use embassy_usb::class::hid::{
+    Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter, State as HidState,
+};
 use embassy_usb::class::midi::{MidiClass, Receiver as UsbMidiRx, Sender as UsbMidiTx};
 use embassy_usb::{Builder, Config as UsbConfig};
 use embedded_graphics::mono_font::ascii::FONT_10X20;
@@ -55,6 +58,7 @@ use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
 use midicaptain_firmware::hal::expression::{self, ExpressionInputs};
 use midicaptain_firmware::hal::leds::{self, LedDriver};
+use midicaptain_firmware::hal::hid;
 use midicaptain_firmware::hal::buttons;
 use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
@@ -89,6 +93,8 @@ static CONFIG_REQ_CH: app::ConfigReqChannel = app::ConfigReqChannel::new();
 static CONFIG_RESP_CH: app::ConfigRespChannel = app::ConfigRespChannel::new();
 // MIDI-thru forwards from the input loops to the output loop (one transport each).
 static THRU_CH: mux::ThruChannel = mux::ThruChannel::new();
+// Outbound USB-HID reports (keyboard / consumer control) from the router → HID task.
+static HID_CH: hid::HidChannel = hid::HidChannel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -214,11 +220,29 @@ async fn main(spawner: Spawner) {
         static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
         CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64)
     };
+    // USB-HID (keyboard + consumer control) — third composite interface, for
+    // `Action::Hid` (Tier 5). Always present so the host's interface count is
+    // stable across config changes (no driver re-install per config push).
+    let hid_writer = {
+        static HID_STATE: StaticCell<HidState> = StaticCell::new();
+        let hid_config = HidConfig {
+            report_descriptor: hid::REPORT_DESCRIPTOR,
+            request_handler: None,
+            poll_ms: 10,
+            max_packet_size: 16,
+            // Report-ID based (keyboard + consumer on one interface), not a BIOS
+            // boot device — boot protocol doesn't carry report IDs.
+            hid_subclass: HidSubclass::No,
+            hid_boot_protocol: HidBootProtocol::None,
+        };
+        HidWriter::<_, { hid::REPORT_LEN }>::new(&mut builder, HID_STATE.init(HidState::new()), hid_config)
+    };
     let usb = builder.build();
     spawner.spawn(usb_task(usb).unwrap());
     spawner.spawn(
         cdc_task(cdc_class, CONFIG_REQ_CH.sender(), CONFIG_RESP_CH.receiver()).unwrap(),
     );
+    spawner.spawn(hid_task(hid_writer, HID_CH.receiver()).unwrap());
 
     static TX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -263,6 +287,7 @@ async fn main(spawner: Spawner) {
         LED_CH.sender(),
         MIDI_CMD.sender(),
         SYSEX_OUT.sender(),
+        HID_CH.sender(),
     );
     spawner.spawn(
         app::router_task(
@@ -292,6 +317,14 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn usb_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>) -> ! {
     device.run().await
+}
+
+#[embassy_executor::task]
+async fn hid_task(
+    writer: HidWriter<'static, UsbDriver, { hid::REPORT_LEN }>,
+    rx: hid::HidReceiver,
+) -> ! {
+    hid::hid_loop(writer, rx).await
 }
 
 #[embassy_executor::task]

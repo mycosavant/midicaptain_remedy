@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 4  # v4: RuntimeConfig gained the `cycles` pool + Action::Cycle; v3 added group; v2 midi_thru
+PROTO_VERSION = 5  # v5: Action::Hid (keyboard/consumer); v4: cycles pool + Action::Cycle; v3 group; v2 midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -203,6 +203,13 @@ def _dec_action(r: _Reader) -> dict:
         return {"type": "pc_step", "step": b - 256 if b >= 128 else b}
     if disc == 9:  # Cycle(u8) — index into the config's cycle pool
         return {"type": "cycle", "index": r.u8()}
+    if disc == 10:  # Hid(HidReport) — keyboard / consumer-control report
+        hdisc = r.varint()
+        if hdisc == 0:  # Key { keycode: u8, modifiers: u8 }
+            return {"type": "hid", "hid": "key", "keycode": r.u8(), "modifiers": r.u8()}
+        if hdisc == 1:  # Consumer { usage: u16 } — postcard varint
+            return {"type": "hid", "hid": "consumer", "usage": r.varint()}
+        raise ValueError(f"unknown HidReport discriminant {hdisc}")
     raise ValueError(f"unknown Action discriminant {disc}")
 
 
@@ -234,6 +241,13 @@ def _enc_action(a: dict) -> bytes:
         return _varint_enc(8) + bytes([a["step"] & 0xFF])  # i8 as one raw byte
     if t == "cycle":
         return _varint_enc(9) + bytes([a["index"]])
+    if t == "hid":  # Hid(HidReport)
+        h = a["hid"]
+        if h == "key":  # Key { keycode: u8, modifiers: u8 }
+            return _varint_enc(10) + _varint_enc(0) + bytes([a["keycode"], a["modifiers"]])
+        if h == "consumer":  # Consumer { usage: u16 } — postcard varint
+            return _varint_enc(10) + _varint_enc(1) + _varint_enc(a["usage"])
+        raise ValueError(f"unknown hid report kind {h!r}")
     raise ValueError(f"unknown action type {t!r}")
 
 

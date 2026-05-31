@@ -31,7 +31,10 @@ embassy-time     = { version = "0.5",  features = ["defmt", "defmt-timestamp-upt
 embassy-sync     = { version = "0.8",  features = ["defmt"] }
 embassy-futures  = "0.1"
 embassy-rp       = { version = "0.10", features = ["defmt", "time-driver", "critical-section-impl", "rp2040", "unstable-pac"] }
-embassy-usb      = { version = "0.6",  features = ["defmt"] }
+# `max-interface-count-8`: the composite device uses 5 interfaces (USB-MIDI = 2,
+# CDC-ACM = 2, HID = 1); the embassy-usb default cap is 4, which panics at boot
+# when the HID interface is added. 8 leaves headroom for a future interface.
+embassy-usb      = { version = "0.6",  features = ["defmt", "max-interface-count-8"] }
 embassy-usb-driver = "0.2"
 
 embedded-io-async = { version = "0.7", features = ["defmt"] }

@@ -70,6 +70,33 @@ pub struct LedColor {
     pub b: u8,
 }
 
+/// A USB-HID report to emit on the host. Carried to the HID task
+/// (`hal::hid::hid_loop`), which writes a press-then-release ("tap") report on
+/// the interrupt endpoint. Also embedded directly in
+/// [`crate::config::Action::Hid`]: unlike CC (where the router resolves the
+/// channel and toggle state), a HID action is already fully concrete, so the
+/// config value and the wire message are one and the same type.
+///
+/// NOTE: serde keys enum variants by position — only ever *append* variants here
+/// (a reorder would silently re-interpret every stored/pushed config). It is
+/// `serde` + `Copy` for exactly that embedding in the config model (cf.
+/// [`LedColor`]).
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub enum HidReport {
+    /// A keyboard keystroke: a USB Usage-Page-0x07 `keycode` plus a `modifiers`
+    /// bitmask (bit0 LeftCtrl, bit1 LeftShift, bit2 LeftAlt, bit3 LeftGUI; bits
+    /// 4–7 the right-hand modifiers). The HID task emits a press then an
+    /// all-keys-up release, so it behaves as a momentary tap with the held
+    /// modifiers — e.g. Ctrl+Z.
+    Key { keycode: u8, modifiers: u8 },
+    /// A Consumer-Control (media / transport) `usage` on USB Usage Page 0x0C —
+    /// e.g. `0x00CD` Play/Pause, `0x00E9`/`0x00EA` Volume Up/Down, `0x00B5`/
+    /// `0x00B6` Scan Next/Prev. These are *not* keyboard keys; the host routes
+    /// them through a separate report. Emitted as a press then a zero-usage
+    /// release. 16-bit because consumer usages exceed 255.
+    Consumer { usage: u16 },
+}
+
 /// A full LED frame: one colour per footswitch, in `pins::Switch::ALL`
 /// order (10 entries). The LEDs task is the only owner of the WS2812
 /// chain; it maps this to the 30-pixel buffer.
