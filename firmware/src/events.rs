@@ -63,7 +63,7 @@ pub enum MidiCmd {
 
 /// Per-switch RGB intent. The LEDs task expands each entry across that
 /// switch's three physical WS2812 pixels (see `pins::LED_RANGES`).
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub struct LedColor {
     pub r: u8,
     pub g: u8,

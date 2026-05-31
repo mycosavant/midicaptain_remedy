@@ -51,9 +51,17 @@ embedded-graphics = "0.8"
 mipidsi          = { version = "0.10", features = ["defmt"] }
 
 # Owned, allocator-free strings/vecs for widget state (TextPanel buffers,
-# wrapped-line slices). 0.9 is what the embassy 0.10 stack pulls in
-# transitively — using the same major avoids a third graph node.
-heapless = "0.9"
+# wrapped-line slices) and the runtime config model. 0.9 is what the embassy
+# 0.10 stack pulls in transitively — using the same major avoids a third graph
+# node. The `serde` feature lets `String`/`Vec` (de)serialize for config persist.
+heapless = { version = "0.9", features = ["serde"] }
+
+# Runtime-config (de)serialization. The config is a serde-derived owned model
+# (`config::RuntimeConfig`) persisted to flash as a compact `postcard` blob and
+# reloaded on boot; the webapp will later push the same model over USB. Both
+# crates are no_std / no-alloc (fixed-buffer `to_slice` / `from_bytes`).
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false }
 
 # Cortex-M0+ has no native CAS. `portable-atomic` polyfills it via
 # `critical-section`. Required because `static_cell` and several embassy
