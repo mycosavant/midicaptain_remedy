@@ -1,0 +1,181 @@
+//! Roland / BOSS Katana SysEx helpers.
+//!
+//! A byte-for-byte port of the Roland message construction in
+//! [`remedy/lib/midi.py`](../../../remedy/lib/midi.py). Every builder
+//! produces the **complete on-wire message including the `0xF0`/`0xF7`
+//! delimiters** — the CircuitPython code relied on `adafruit_midi` to add
+//! them, whereas here we emit them explicitly so the output is directly
+//! comparable to bytes captured off the wire.
+//!
+//! Message layout (Roland "System Exclusive, model-specific"):
+//!
+//! ```text
+//!   F0 41 <dev> <model[4]> <op> <addr[4]> <data[..]> <checksum> F7
+//!         └ROLAND_ID                                  └over addr+data
+//! ```
+//!
+//! `op` is `0x12` (DT1, *Data Set 1* — write) or `0x11` (RQ1, *Data
+//! Request 1* — read). The checksum covers the address and data bytes
+//! only, per the Roland convention.
+
+use heapless::Vec;
+
+use super::sysex::{SysEx, SysExError, SYSEX_END, SYSEX_START};
+
+/// Roland's SysEx manufacturer ID.
+pub const ROLAND_ID: u8 = 0x41;
+
+/// Default device ID (unit 0 / broadcast). Matches the CP default.
+pub const DEVICE_ID: u8 = 0x00;
+
+/// BOSS Katana model ID (`GT`-series amp address space).
+pub const KATANA_MODEL_ID: [u8; 4] = [0x00, 0x00, 0x00, 0x33];
+
+/// DT1 — *Data Set 1*: write/set a parameter.
+pub const OP_DT1: u8 = 0x12;
+/// RQ1 — *Data Request 1*: read/query a parameter.
+pub const OP_RQ1: u8 = 0x11;
+
+/// Roland 7-bit checksum over `data`:
+/// `accum = sum(data) & 0x7F; (128 - accum) & 0x7F`.
+///
+/// Direct port of `roland_checksum` in `remedy/lib/midi.py`.
+pub fn roland_checksum(data: &[u8]) -> u8 {
+    let sum: u32 = data.iter().map(|&b| b as u32).sum();
+    let accum = (sum & 0x7F) as u8;
+    (128 - accum) & 0x7F
+}
+
+/// Encode a value (0..=2000) using Roland's 11-bit split into two 7-bit
+/// bytes `[high, low]`. Used for delay time and similar large values.
+///
+/// Port of `encode_roland_11bit`.
+pub fn encode_11bit(value: u16) -> [u8; 2] {
+    let v = value.min(2000);
+    [((v >> 7) & 0x0F) as u8, (v & 0x7F) as u8]
+}
+
+/// Decode Roland's 11-bit `[high, low]` pair back to an integer.
+///
+/// Port of `decode_roland_11bit`.
+pub fn decode_11bit(high: u8, low: u8) -> u16 {
+    (((high & 0x0F) as u16) << 7) | ((low & 0x7F) as u16)
+}
+
+/// Build a complete Roland SysEx message into `out`:
+/// `F0 41 <dev> <model..> <op> <addr..> <data..> <cksum> F7`.
+///
+/// The checksum is taken over `address ++ data` only. Mirrors
+/// `build_roland_sysex` (plus the `0xF0`/`0xF7` that `adafruit_midi` adds
+/// downstream of it). Returns [`SysExError::Overflow`] if `out` is too
+/// small for the whole message.
+pub fn build_into<const N: usize>(
+    out: &mut Vec<u8, N>,
+    model_id: &[u8],
+    operation: u8,
+    address: &[u8; 4],
+    data: &[u8],
+    device_id: u8,
+) -> Result<(), SysExError> {
+    out.clear();
+    out.push(SYSEX_START).map_err(|_| SysExError::Overflow)?;
+    out.push(ROLAND_ID).map_err(|_| SysExError::Overflow)?;
+    out.push(device_id).map_err(|_| SysExError::Overflow)?;
+    out.extend_from_slice(model_id).map_err(|_| SysExError::Overflow)?;
+    out.push(operation).map_err(|_| SysExError::Overflow)?;
+
+    // The checksum region (address + data) is contiguous in the buffer
+    // once both are pushed; compute it there so there is one definition of
+    // the algorithm (`roland_checksum`).
+    let payload_start = out.len();
+    out.extend_from_slice(address).map_err(|_| SysExError::Overflow)?;
+    out.extend_from_slice(data).map_err(|_| SysExError::Overflow)?;
+    let checksum = roland_checksum(&out[payload_start..]);
+
+    out.push(checksum).map_err(|_| SysExError::Overflow)?;
+    out.push(SYSEX_END).map_err(|_| SysExError::Overflow)?;
+    Ok(())
+}
+
+/// Build a DT1 (write) message for the given model into a fresh [`SysEx`]
+/// buffer.
+pub fn dt1(model_id: &[u8], address: &[u8; 4], data: &[u8]) -> Result<SysEx, SysExError> {
+    let mut msg = SysEx::new();
+    build_into(&mut msg, model_id, OP_DT1, address, data, DEVICE_ID)?;
+    Ok(msg)
+}
+
+/// Build an RQ1 (read) message requesting `length` bytes at `address`.
+///
+/// The length is encoded as the 4-byte size field `[0, 0, 0, length]`,
+/// matching `query_sysex_param` in the CP firmware (which supports a
+/// single-byte length in the low position — sufficient for the per-
+/// parameter reads the firmware issues).
+pub fn rq1(model_id: &[u8], address: &[u8; 4], length: u8) -> Result<SysEx, SysExError> {
+    let size = [0, 0, 0, length];
+    let mut msg = SysEx::new();
+    build_into(&mut msg, model_id, OP_RQ1, address, &size, DEVICE_ID)?;
+    Ok(msg)
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Katana-specific convenience builders (all DT1 on `KATANA_MODEL_ID`).
+// Addresses ported verbatim from `remedy/lib/midi.py`.
+// ───────────────────────────────────────────────────────────────────────
+
+/// Enter the Katana BTS editor mode (`0x7F 00 00 01` ← `0x01`).
+pub fn enter_editor_mode() -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x7F, 0x00, 0x00, 0x01], &[0x01])
+}
+
+/// Exit the Katana BTS editor mode (`0x7F 00 00 01` ← `0x00`).
+pub fn exit_editor_mode() -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x7F, 0x00, 0x00, 0x01], &[0x00])
+}
+
+/// Recall a preset: `0` = Panel, `1..=4` = CH1..CH4.
+pub fn recall_preset(preset: u8) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x00, 0x01, 0x00, 0x00], &[0x00, preset])
+}
+
+/// Set amp type: `0` = Acoustic, `1` = Clean, `2` = Crunch, `3` = Lead,
+/// `4` = Brown.
+pub fn set_amp_type(amp_type: u8) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x20], &[amp_type])
+}
+
+/// Set gain (0..=100).
+pub fn set_gain(value: u8) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x21], &[value])
+}
+
+/// Set master volume (0..=100).
+pub fn set_volume(value: u8) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x22], &[value])
+}
+
+/// Toggle the BOOST block on/off.
+pub fn set_boost(on: bool) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x00, 0x30], &[on as u8])
+}
+
+/// Toggle the MOD block on/off.
+pub fn set_mod(on: bool) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x01, 0x40], &[on as u8])
+}
+
+/// Toggle the DELAY block on/off.
+pub fn set_delay(on: bool) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x05, 0x60], &[on as u8])
+}
+
+/// Toggle the REVERB block on/off.
+pub fn set_reverb(on: bool) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x06, 0x10], &[on as u8])
+}
+
+/// Set delay time in milliseconds (1..=2000), Roland 11-bit encoded.
+pub fn set_delay_time(ms: u16) -> Result<SysEx, SysExError> {
+    let encoded = encode_11bit(ms);
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x05, 0x62], &encoded)
+}

@@ -1,0 +1,7 @@
+[toolchain]
+# RP2040 is Cortex-M0+ → thumbv6m-none-eabi.
+# Pinning to "stable" rather than a specific version; embassy 0.10 builds
+# on stable as of May 2026.
+channel    = "stable"
+components = ["rust-src", "rustfmt", "clippy"]
+targets    = ["thumbv6m-none-eabi"]

@@ -1,0 +1,101 @@
+[package]
+name = "midicaptain-firmware"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Rust + Embassy firmware port for the Paint Audio MIDI Captain (RP2040)."
+
+# Library crate shared by the application binary (src/bin/midicaptain.rs)
+# and the bring-up examples in examples/. Exposes the pin map, channel
+# contracts, display/UI, HAL tasks, MIDI engine, and flash settings store.
+[lib]
+name = "midicaptain_firmware"
+
+# ─── Embassy / Cortex-M core ─────────────────────────────────────────────
+# Versions chosen to match the current embassy/main examples (May 2026):
+#   embassy-rp 0.10 → embassy-executor 0.10, embassy-time 0.5, embassy-sync 0.8,
+#                     embassy-usb 0.6, embassy-usb-driver 0.2.
+# Pinning the major.minor lets cargo pick the latest compatible patch.
+[dependencies]
+cortex-m       = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt    = "0.7"
+critical-section = "1.2"
+
+defmt          = "1.0"
+defmt-rtt      = "1.0"
+panic-probe    = { version = "1.0", features = ["print-defmt"] }
+
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time     = { version = "0.5",  features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-sync     = { version = "0.8",  features = ["defmt"] }
+embassy-futures  = "0.1"
+embassy-rp       = { version = "0.10", features = ["defmt", "time-driver", "critical-section-impl", "rp2040", "unstable-pac"] }
+embassy-usb      = { version = "0.6",  features = ["defmt"] }
+embassy-usb-driver = "0.2"
+
+embedded-io-async = { version = "0.7", features = ["defmt"] }
+smart-leds = "0.4"
+static_cell = "2"
+
+# ─── Display stack ───────────────────────────────────────────────────────
+# ST7789 lives behind mipidsi 0.10, which ships its own embedded-hal 1.0
+# `SpiInterface` — no separate `display-interface-spi` crate needed (that
+# was the mipidsi 0.7/0.8 pattern). `embedded-hal-bus::spi::ExclusiveDevice`
+# wraps embassy-rp's blocking `Spi` (an `SpiBus`) into the `SpiDevice` the
+# interface wants. `embedded-graphics` provides primitives and built-in
+# fonts; PCF font parity with the OEM is a later session.
+embedded-hal     = "1.0"
+embedded-hal-bus = "0.3"
+embedded-graphics = "0.8"
+mipidsi          = { version = "0.10", features = ["defmt"] }
+
+# Owned, allocator-free strings/vecs for widget state (TextPanel buffers,
+# wrapped-line slices) and the runtime config model. 0.9 is what the embassy
+# 0.10 stack pulls in transitively — using the same major avoids a third graph
+# node. The `serde` feature lets `String`/`Vec` (de)serialize for config persist.
+heapless = { version = "0.9", features = ["serde"] }
+
+# Runtime-config (de)serialization. The config is a serde-derived owned model
+# (`config::RuntimeConfig`) persisted to flash as a compact `postcard` blob and
+# reloaded on boot; the webapp will later push the same model over USB. Both
+# crates are no_std / no-alloc (fixed-buffer `to_slice` / `from_bytes`).
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false }
+
+# Cortex-M0+ has no native CAS. `portable-atomic` polyfills it via
+# `critical-section`. Required because `static_cell` and several embassy
+# crates lean on AtomicBool::compare_exchange.
+portable-atomic = { version = "1", features = ["critical-section"] }
+# Flash-backed key-value settings store (src/storage.rs). `sequential-storage`
+# is a wear-levelling KV map over NOR flash; we use only its core no_std
+# `map` + `cache` modules, so default features (incl. `std`) stay off.
+# embedded-storage{,-async} are pulled in transitively by embassy-rp but named
+# directly here because storage.rs's blocking->async flash shim implements/uses
+# their NorFlash traits (embassy-rp's blocking `Flash` already implements the
+# blocking side; the shim adapts it to the async side the KV map consumes,
+# which avoids reserving a DMA channel + interrupt for the store).
+sequential-storage = { version = "7.2.0", default-features = false }
+embedded-storage = "0.3.1"
+embedded-storage-async = "0.4.1"
+
+# ─── Release profile ─────────────────────────────────────────────────────
+# LTO + opt-level=s keeps RP2040 flash usage low; debug=true ships symbols
+# to defmt but is stripped from the UF2/flash binary (it lives in the ELF
+# only, used by probe-rs/defmt for symbol resolution).
+[profile.release]
+codegen-units = 1
+debug         = true
+incremental   = false
+lto           = true
+opt-level     = "s"
+overflow-checks = false
+
+# dev profile: still small enough to fit, but keep panics catchable
+[profile.dev]
+codegen-units = 1
+debug         = true
+incremental   = false
+lto           = "thin"
+opt-level     = "s"
+overflow-checks = true
