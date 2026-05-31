@@ -171,8 +171,16 @@ def _dec_action(r: _Reader) -> dict:
         return {"type": "none"}
     if disc == 1:  # MidiCc { cc, value: CcValue }
         cc = r.u8()
-        return {"type": "cc", "cc": cc,
-                "value": "toggle" if r.varint() == 1 else r.u8()}
+        vdisc = r.varint()
+        if vdisc == 0:      # Fixed(u8)
+            value = r.u8()
+        elif vdisc == 1:    # Toggle
+            value = "toggle"
+        elif vdisc == 2:    # Momentary
+            value = "momentary"
+        else:
+            raise ValueError(f"unknown CcValue discriminant {vdisc}")
+        return {"type": "cc", "cc": cc, "value": value}
     if disc == 2:  # ProgramChange { program }
         return {"type": "pc", "program": r.u8()}
     if disc == 3:  # Sysex(SysexCmd)
@@ -186,6 +194,9 @@ def _dec_action(r: _Reader) -> dict:
         return {"type": "page_prev"}
     if disc == 7:
         return {"type": "tuner"}
+    if disc == 8:  # ProgramChangeStep(i8) — postcard encodes i8 as one raw byte
+        b = r.u8()
+        return {"type": "pc_step", "step": b - 256 if b >= 128 else b}
     raise ValueError(f"unknown Action discriminant {disc}")
 
 
@@ -195,9 +206,12 @@ def _enc_action(a: dict) -> bytes:
         return _varint_enc(0)
     if t == "cc":
         out = _varint_enc(1) + bytes([a["cc"]])
-        if a["value"] == "toggle":
+        v = a["value"]
+        if v == "toggle":
             return out + _varint_enc(1)
-        return out + _varint_enc(0) + bytes([int(a["value"])])
+        if v == "momentary":
+            return out + _varint_enc(2)
+        return out + _varint_enc(0) + bytes([int(v)])  # Fixed(u8)
     if t == "pc":
         return _varint_enc(2) + bytes([a["program"]])
     if t == "sysex":
@@ -210,6 +224,8 @@ def _enc_action(a: dict) -> bytes:
         return _varint_enc(6)
     if t == "tuner":
         return _varint_enc(7)
+    if t == "pc_step":
+        return _varint_enc(8) + bytes([a["step"] & 0xFF])  # i8 as one raw byte
     raise ValueError(f"unknown action type {t!r}")
 
 
