@@ -19,6 +19,7 @@ pub mod hal;
 pub mod menu;
 pub mod midi;
 pub mod pins;
+pub mod pitch;
 pub mod storage;
 pub mod tuner;
 pub mod ui;

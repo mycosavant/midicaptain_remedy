@@ -87,6 +87,63 @@ ADC reference is the internal 3.3 V rail.
 ### Reserved / unused
 
 GP4, GP5, GP6, GP21, GP22, GP26. Available for future expansion.
+**GP26 / ADC0 is claimed by the optional tuner audio input — see below.**
+
+## Tuner audio input — OPTIONAL MOD (Path B)
+
+The stock board has **no audio input**, so the firmware tuner can't detect
+pitch on its own (the HKAudio "tuner" is just a remote display fed by host
+software over MIDI). To make it a *standalone* tuner, add a small analog
+front-end that feeds an audio signal into the one free ADC channel,
+**GP26 / ADC0**. The DSP (`src/pitch.rs`, YIN) is already done and verified
+(`examples/pitch_selftest.rs`); this is the hardware half.
+
+**Signal source — use a line-level tap, not the raw guitar.** The easiest,
+lowest-noise option is the amp's **line out / rec out / headphone out**
+(≈0.3–1 V, low impedance). Line level needs only a buffer + filter (no gain
+stage), and it's present regardless of the guitar's volume knob. (Tapping the
+guitar directly is possible but needs a high-impedance buffer *and* gain — more
+parts, more noise. Not recommended for v1.)
+
+**Reference circuit** (single 3.3 V supply, rail-to-rail op-amp):
+
+```
+ line out ──┤├──┬───────────────[ R3 1k ]───┬──► GP26 / ADC0
+   (tip)   C1   │                            │
+          1µF   │      3V3                   C3 6.8nF   (R3+C3: ~3.5 kHz
+                │       │                     │          anti-alias LPF,
+              [R1]    [op-amp]               GND         Nyquist = 8 kHz)
+              100k   MCP6001 buffer
+                │    + in ← bias node
+   bias node ───┴──[R2]── GND     (R1=R2=100k → mid-rail 1.65 V bias)
+   (also the op-amp + input, with C1's signal AC-coupled onto it)
+
+   op-amp: V+ = 3V3, V- = GND, OUT tied to − in (unity gain follower)
+```
+
+Cleaner description of the topology:
+1. **C1 (1 µF)** AC-couples the line signal (blocks the source's DC).
+2. **R1 / R2 (100 kΩ each)** from 3V3 and GND set a **mid-rail 1.65 V bias** at
+   the op-amp's non-inverting input, so the audio swings around mid-scale
+   instead of clipping at 0 V.
+3. **Op-amp** (MCP6001/6002, OPA340, or TLV9061 — any rail-to-rail-I/O single
+   on 3.3 V) as a **unity-gain follower**: low-impedance drive into the ADC.
+4. **R3 (1 kΩ) + C3 (6.8 nF)** form a 1st-order **anti-alias low-pass** at
+   ≈3.5 kHz — above the guitar's useful harmonics, well below the 8 kHz Nyquist
+   for the planned 16 kHz sample rate. R3 also limits ADC fault current.
+5. Optional: **BAT54S** dual Schottky clamp from GP26 to 3V3 and GND for input
+   protection (the rail-to-rail output already bounds the swing, so this is just
+   insurance).
+
+**BOM:** 1× rail-to-rail op-amp (SC70/SOT23), C1 1 µF, C3 6.8 nF, R1/R2 100 kΩ,
+R3 1 kΩ, optional BAT54S, a 3.5 mm input jack. Power from the board's 3V3 rail;
+share ground with the line-out shield. Keep the run short and away from the
+NeoPixel/USB lines.
+
+**Firmware side (Phase 3, pending this mod):** an `adc_task` switches the ADC
+to DMA-sample GP26 at ~16 kHz while in `Mode::Tuner`, runs `PitchDetector`, and
+feeds the existing `TunerView`. Until the mod exists, the detector is exercised
+only by the synthetic self-test.
 
 ## USB identity
 
