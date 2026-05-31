@@ -249,18 +249,56 @@ impl NorFlash for AsyncFlash {
 /// Async accessor for the persisted [`Settings`].
 ///
 /// Construct once at boot with [`Storage::new`], then call the typed
-/// load/store methods. Cheap to keep around: it owns the flash peripheral
-/// and a small scratch buffer; it spawns nothing.
+/// load/store methods. It owns the flash peripheral and a scan buffer (sized
+/// to the largest map item — the config blob); it spawns nothing.
 pub struct Storage {
     map: MapStorage<u8, AsyncFlash, NoCache>,
-    /// Scratch buffer the map serializes through. Our largest item is a
-    /// `u8` key + `u32` value, so this is comfortably oversized; the slack
-    /// is headroom for future settings.
+    /// Scratch buffer the scalar settings accessors serialize *and scan*
+    /// through.
+    ///
+    /// `sequential-storage`'s map is log-structured: `fetch_item` (and the GC
+    /// that `store_item` can trigger) walk **every** item in the active
+    /// page(s), reading each one into this buffer to compare its key — see the
+    /// crate's own note, *"the data buffer must be long enough to hold the
+    /// longest serialized data of your Key + Value types combined."* So this is
+    /// **not** sized for a scalar; it must hold the **largest item in the whole
+    /// map**, which is the user-config blob ([`key::CONFIG`]), or a scalar read
+    /// will fault with `BufferTooSmall` the moment a config has been stored —
+    /// silently reverting every saved setting to its default. [`BUF_LEN`] is
+    /// therefore derived from [`config::MAX_SERIALIZED_LEN`] and pinned to it by
+    /// a compile-time assertion below.
+    ///
+    /// [`BUF_LEN`]: Self::BUF_LEN
     buf: [u8; Self::BUF_LEN],
 }
 
+// Pin the scalar scan buffer to the config model: it must be able to hold the
+// largest item in the map (the config blob) plus its key, or scalar reads fault
+// with `BufferTooSmall` once any config is stored. If `config::MAX_PAGES` (or a
+// cap) ever grows past what this buffer covers, this fails the build instead of
+// silently re-introducing the "config push wipes saved settings" bug.
+const _: () = assert!(
+    Storage::BUF_LEN >= Storage::MAX_MAP_ITEM_LEN,
+    "Storage::buf is smaller than the largest map item (config blob); \
+     scalar settings reads would fault with BufferTooSmall after a config store"
+);
+
 impl Storage {
-    const BUF_LEN: usize = 128;
+    /// The largest item the key-value map can hold: a 1-byte [`u8`] key plus the
+    /// largest serialized config value ([`config::MAX_SERIALIZED_LEN`]). The
+    /// config blob is by far the biggest value; the scalars are a few bytes. Any
+    /// buffer used to traverse the map must be at least this large.
+    const MAX_MAP_ITEM_LEN: usize = 1 + config::MAX_SERIALIZED_LEN;
+
+    /// Length of the scalar accessors' scan buffer. Must be `≥`
+    /// [`MAX_MAP_ITEM_LEN`](Self::MAX_MAP_ITEM_LEN), because every map traversal
+    /// reads each item it passes through this buffer (see [`Storage::buf`]).
+    ///
+    /// `+ 16` is headroom for `read_item` rounding the item length up to the
+    /// flash write-word size (the RP2040 program word is 4 bytes). The `const`
+    /// assertion above the `impl` fails the build if this ever drops below the
+    /// proven bound — e.g. if [`config::MAX_PAGES`] grows.
+    const BUF_LEN: usize = Self::MAX_MAP_ITEM_LEN + 16;
     const RANGE: Range<u32> = CONFIG_REGION_START..CONFIG_REGION_END;
 
     /// Bind the store to the flash peripheral.

@@ -40,6 +40,7 @@ use embassy_rp::uart::{
     BufferedInterruptHandler, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig,
 };
 use embassy_rp::usb::{Driver, InterruptHandler as UsbIrq};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
 use embassy_usb::class::midi::{MidiClass, Receiver as UsbMidiRx, Sender as UsbMidiTx};
 use embassy_usb::{Builder, Config as UsbConfig};
 use embedded_graphics::mono_font::ascii::FONT_10X20;
@@ -48,6 +49,7 @@ use heapless::String;
 use static_cell::StaticCell;
 
 use midicaptain_firmware::app::{self, Router};
+use midicaptain_firmware::config;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
 use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
@@ -56,6 +58,7 @@ use midicaptain_firmware::hal::leds::{self, LedDriver};
 use midicaptain_firmware::hal::buttons;
 use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
+use midicaptain_firmware::proto;
 use midicaptain_firmware::storage::{self, Storage};
 use midicaptain_firmware::ui::{Palette, TextPanel, TunerView, Widget};
 use {defmt_rtt as _, panic_probe as _};
@@ -81,6 +84,11 @@ static MIDI_RX: mux::MidiRxChannel = mux::MidiRxChannel::new();
 static MIDI_CMD: mux::MidiCmdChannel = mux::MidiCmdChannel::new();
 static SYSEX_IN: mux::SysExChannel = mux::SysExChannel::new();
 static SYSEX_OUT: mux::SysExChannel = mux::SysExChannel::new();
+// Config-sync request/response between the CDC task and the router.
+static CONFIG_REQ_CH: app::ConfigReqChannel = app::ConfigReqChannel::new();
+static CONFIG_RESP_CH: app::ConfigRespChannel = app::ConfigRespChannel::new();
+// MIDI-thru forwards from the input loops to the output loop (one transport each).
+static THRU_CH: mux::ThruChannel = mux::ThruChannel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -128,11 +136,29 @@ async fn main(spawner: Spawner) {
     // ── Storage: load persisted settings (defaults on a blank device) ──
     let mut storage = Storage::new(p.FLASH);
     // Recovery hatch: hold UP+DOWN during power-on to wipe persisted settings
-    // back to factory defaults (e.g. to clear a bad MIDI channel or pedal
-    // calibration). Checked before load so the wipe takes effect this boot.
-    if footswitches[8].is_low() && footswitches[9].is_low() {
-        warn!("factory reset: UP+DOWN held at boot — erasing settings");
-        let _ = storage.factory_reset().await;
+    // *and* the stored user config back to factory defaults — `factory_reset`
+    // erases the whole flash KV map (clears a bad MIDI channel, pedal
+    // calibration, or a pushed config that bricks the UI). Checked before load
+    // so the wipe takes effect this boot.
+    //
+    // The footswitch inputs were created just above with internal pull-ups; the
+    // lines take a moment to charge high after `Input::new`, so an immediate
+    // read can return a spurious LOW that looks like the combo and wipes
+    // everything on a normal boot (observed on hardware — "factory reset" fired
+    // with nothing held). Guard against it two ways: let the pull-ups settle
+    // first, then require the combo to be *held* — sample twice ~50 ms apart and
+    // reset only if both samples agree. A genuine hold passes; a power-on
+    // transient does not.
+    let combo_held = || footswitches[8].is_low() && footswitches[9].is_low();
+    embassy_time::Timer::after_millis(5).await; // let the pull-ups settle
+    if combo_held() {
+        embassy_time::Timer::after_millis(50).await; // confirm it's a real hold
+        if combo_held() {
+            warn!("factory reset: UP+DOWN held at boot — erasing settings + config");
+            let _ = storage.factory_reset().await;
+        } else {
+            info!("boot: UP+DOWN transient at power-on, not a hold — no factory reset");
+        }
     }
     let settings = storage.load().await;
     info!("settings: {}", settings);
@@ -167,13 +193,15 @@ async fn main(spawner: Spawner) {
     usb_config.max_packet_size_0 = 64;
 
     let mut builder = {
-        static CFG: StaticCell<[u8; 256]> = StaticCell::new();
+        // Config descriptor holds MIDI + CDC interfaces (composite), so it is
+        // sized generously to avoid a build-time descriptor overflow.
+        static CFG: StaticCell<[u8; 512]> = StaticCell::new();
         static BOS: StaticCell<[u8; 256]> = StaticCell::new();
         static CTL: StaticCell<[u8; 64]> = StaticCell::new();
         Builder::new(
             driver,
             usb_config,
-            CFG.init([0; 256]),
+            CFG.init([0; 512]),
             BOS.init([0; 256]),
             &mut [],
             CTL.init([0; 64]),
@@ -181,8 +209,16 @@ async fn main(spawner: Spawner) {
     };
     let midi_class = MidiClass::new(&mut builder, 1, 1, 64);
     let (usb_tx, usb_rx) = midi_class.split();
+    // USB-CDC (ACM) for webapp ↔ device config sync — composite alongside MIDI.
+    let cdc_class = {
+        static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
+        CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64)
+    };
     let usb = builder.build();
     spawner.spawn(usb_task(usb).unwrap());
+    spawner.spawn(
+        cdc_task(cdc_class, CONFIG_REQ_CH.sender(), CONFIG_RESP_CH.receiver()).unwrap(),
+    );
 
     static TX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -207,12 +243,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(buttons::buttons_task(footswitches, BUTTON_CH.sender()).unwrap());
 
     // ── User config: load from flash (falls back to the baked default on a
-    // blank/corrupt device). The one-shot scratch buffer is too large to keep
-    // inside `Storage` for the program's lifetime, so it lives here. ────────
+    // blank/corrupt device). The scratch buffer is too large to keep inside
+    // `Storage` for the program's lifetime, so it lives here — and is then
+    // handed to the router, which reuses it to persist configs pushed over USB
+    // (a second 8 KB array would be wasteful). ──────────────────────────────
     static CONFIG_SCRATCH: StaticCell<[u8; storage::CONFIG_SCRATCH_LEN]> = StaticCell::new();
-    let config = storage
-        .load_config(CONFIG_SCRATCH.init([0; storage::CONFIG_SCRATCH_LEN]))
-        .await;
+    let config_scratch = CONFIG_SCRATCH.init([0; storage::CONFIG_SCRATCH_LEN]);
+    let config = storage.load_config(&mut config_scratch[..]).await;
     info!("config: {} page(s)", config.page_count());
 
     // ── Router (last: it depends on settings + config loaded above, and
@@ -221,6 +258,7 @@ async fn main(spawner: Spawner) {
         config,
         settings,
         storage,
+        config_scratch,
         DISPLAY_CH.sender(),
         LED_CH.sender(),
         MIDI_CMD.sender(),
@@ -233,6 +271,8 @@ async fn main(spawner: Spawner) {
             ENC_CH.receiver(),
             EXPR_CH.receiver(),
             MIDI_RX.receiver(),
+            CONFIG_REQ_CH.receiver(),
+            CONFIG_RESP_CH.sender(),
         )
         .unwrap(),
     );
@@ -256,17 +296,218 @@ async fn usb_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>) -> ! {
 
 #[embassy_executor::task]
 async fn usb_in_task(usb_rx: UsbMidiRx<'static, UsbDriver>) -> ! {
-    mux::usb_in_loop(usb_rx, &MIDI_RX, &SYSEX_IN).await
+    mux::usb_in_loop(usb_rx, &MIDI_RX, &SYSEX_IN, THRU_CH.sender()).await
 }
 
 #[embassy_executor::task]
 async fn din_in_task(din_rx: BufferedUartRx) -> ! {
-    mux::din_in_loop(din_rx, &MIDI_RX, &SYSEX_IN).await
+    mux::din_in_loop(din_rx, &MIDI_RX, &SYSEX_IN, THRU_CH.sender()).await
 }
 
 #[embassy_executor::task]
 async fn out_task(usb_tx: UsbMidiTx<'static, UsbDriver>, din_tx: BufferedUartTx) -> ! {
-    mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT).await
+    mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT, THRU_CH.receiver()).await
+}
+
+// ── USB-CDC config-sync endpoint ────────────────────────────────────────
+// Serves the config-sync protocol over CDC: HELLO (link probe), GET_CONFIG
+// (read the live config), SET_CONFIG (validate → persist → hot-reload). The
+// wire codec is `proto`; the live config and flash live in the router, reached
+// over the `config_req`/`config_resp` channels (this task is the sole client,
+// so it sends a request then awaits exactly one reply before reading on).
+
+/// Owns the CDC-ACM endpoints. Reassembles COBS frames (host bytes delimited
+/// by `0x00`), decodes each via [`proto`], and replies — routing GET/SET to the
+/// router over the config channels.
+#[embassy_executor::task]
+async fn cdc_task(
+    mut cdc: CdcAcmClass<'static, UsbDriver>,
+    config_req: app::ConfigReqSender,
+    config_resp: app::ConfigRespReceiver,
+) -> ! {
+    static ACC: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
+    static BODY: StaticCell<[u8; proto::MAX_BODY]> = StaticCell::new();
+    static OUT: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
+    static PAYLOAD: StaticCell<[u8; proto::MAX_PAYLOAD]> = StaticCell::new();
+    let acc = ACC.init([0; proto::MAX_FRAME_LEN]);
+    let body = BODY.init([0; proto::MAX_BODY]);
+    let out = OUT.init([0; proto::MAX_FRAME_LEN]);
+    let payload = PAYLOAD.init([0; proto::MAX_PAYLOAD]);
+    let mut pkt = [0u8; 64];
+
+    loop {
+        cdc.wait_connection().await;
+        info!("cdc: host connected");
+        let mut acc_len = 0usize;
+        loop {
+            let n = match cdc.read_packet(&mut pkt).await {
+                Ok(n) => n,
+                Err(_) => break, // host closed / bus reset → await reconnect
+            };
+            for &b in &pkt[..n] {
+                if b == 0 {
+                    handle_cdc_frame(
+                        &acc[..acc_len],
+                        &mut cdc,
+                        &config_req,
+                        &config_resp,
+                        body,
+                        payload,
+                        out,
+                    )
+                    .await;
+                    acc_len = 0;
+                } else if acc_len < acc.len() {
+                    acc[acc_len] = b;
+                    acc_len += 1;
+                } else {
+                    acc_len = 0; // frame too long → resync at the next delimiter
+                }
+            }
+        }
+    }
+}
+
+/// A decoded, owned request — detached from the `body` decode buffer so that
+/// buffer is free to reassemble the reply.
+// `Set` owns a whole `RuntimeConfig` (~2.4 KB); the other variants are tiny.
+// It's a short-lived stack local (one per frame), and `no_std` has no allocator
+// to box into, so the spread is intrinsic and harmless here.
+#[allow(clippy::large_enum_variant)]
+enum Incoming {
+    /// Link probe → reply with the protocol version.
+    Hello,
+    /// Read the live config from the router.
+    Get,
+    /// Replace the live config (already deserialized + checked non-empty).
+    Set(config::RuntimeConfig),
+    /// Reject with this code: bad opcode, or an un-parseable/empty config.
+    Bad(proto::ProtoError),
+}
+
+/// Decode one frame, act on it, and reply. `body` is the COBS decode scratch
+/// (reused to assemble the reply once the request is an owned [`Incoming`]);
+/// `payload` serializes the GET-config blob; `out` holds the encoded reply.
+async fn handle_cdc_frame(
+    frame: &[u8],
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    config_req: &app::ConfigReqSender,
+    config_resp: &app::ConfigRespReceiver,
+    body: &mut [u8],
+    payload: &mut [u8],
+    out: &mut [u8],
+) {
+    if frame.is_empty() {
+        return;
+    }
+    // Decode the frame; for SET, deserialize + validate the config now — while
+    // `body` still holds the decoded payload — into an owned `Incoming`, so
+    // `body` is free to reuse for the reply once the borrow ends.
+    let (seq, incoming) = {
+        let f = match proto::decode(frame, body) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("cdc: bad frame ({})", e);
+                return; // no seq to echo → drop silently
+            }
+        };
+        let inc = match f.cmd {
+            proto::cmd::HELLO => Incoming::Hello,
+            proto::cmd::GET_CONFIG => Incoming::Get,
+            proto::cmd::SET_CONFIG => match config::deserialize(f.payload) {
+                Ok(cfg) if cfg.page_count() > 0 => Incoming::Set(cfg),
+                _ => Incoming::Bad(proto::ProtoError::BadPayload),
+            },
+            other => {
+                warn!("cdc: unhandled cmd {=u8}", other);
+                Incoming::Bad(proto::ProtoError::BadCommand)
+            }
+        };
+        (f.seq, inc)
+    };
+
+    match incoming {
+        Incoming::Hello => {
+            reply(cdc, proto::cmd::HELLO, seq, &[proto::PROTO_VERSION], body, out).await;
+        }
+        Incoming::Get => {
+            config_req.send(app::ConfigReq::Get).await;
+            match config_resp.receive().await {
+                app::ConfigResp::Config(cfg) => match config::serialize(&cfg, payload) {
+                    Ok(blob) => reply(cdc, proto::cmd::GET_CONFIG, seq, blob, body, out).await,
+                    Err(e) => {
+                        warn!("cdc: config serialize failed ({})", e);
+                        error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await;
+                    }
+                },
+                // The router only ever answers Get with Config; anything else
+                // is an internal error — relay it rather than panic.
+                _ => error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await,
+            }
+        }
+        Incoming::Set(cfg) => {
+            config_req.send(app::ConfigReq::Set(cfg)).await;
+            match config_resp.receive().await {
+                app::ConfigResp::Ok => {
+                    reply(cdc, proto::cmd::SET_CONFIG, seq, &[], body, out).await
+                }
+                app::ConfigResp::Err(e) => error_reply(cdc, seq, e, body, out).await,
+                app::ConfigResp::Config(_) => {
+                    error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await
+                }
+            }
+        }
+        Incoming::Bad(e) => error_reply(cdc, seq, e, body, out).await,
+    }
+}
+
+/// Encode `(cmd, seq, payload)` into `out` (scratch `body`) and write the frame.
+async fn reply(
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    cmd: u8,
+    seq: u8,
+    payload: &[u8],
+    body: &mut [u8],
+    out: &mut [u8],
+) {
+    match proto::encode(cmd, seq, payload, body, out) {
+        Ok(n) => write_cdc_frame(cdc, &out[..n]).await,
+        Err(e) => warn!("cdc: encode failed ({})", e),
+    }
+}
+
+/// Reply with `ERROR(code)`, echoing the request `seq`.
+async fn error_reply(
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    seq: u8,
+    code: proto::ProtoError,
+    body: &mut [u8],
+    out: &mut [u8],
+) {
+    reply(cdc, proto::cmd::ERROR, seq, &[code as u8], body, out).await;
+}
+
+/// CDC-ACM bulk max packet size — matches `CdcAcmClass::new(.., 64)` above.
+const CDC_MAX_PACKET: usize = 64;
+
+/// Write a full frame to the host, chunked to the CDC max packet size. The
+/// trailing `0x00` delimiter is part of `frame`, so the host parses by
+/// delimiter regardless of packetisation.
+async fn write_cdc_frame(cdc: &mut CdcAcmClass<'static, UsbDriver>, frame: &[u8]) {
+    for chunk in frame.chunks(CDC_MAX_PACKET) {
+        if cdc.write_packet(chunk).await.is_err() {
+            return; // disconnected mid-write
+        }
+    }
+    // USB marks end-of-transfer with a *short* packet. When the frame length is
+    // an exact multiple of the max packet size, the final data packet is full,
+    // so the host keeps waiting for more and never delivers the buffered bytes
+    // (it hung the GET reply once `midi_thru` nudged the blob to a 64-multiple).
+    // A frame always ends in the 0x00 delimiter, so it is never empty; emit a
+    // zero-length packet to terminate the transfer.
+    if frame.len().is_multiple_of(CDC_MAX_PACKET) {
+        let _ = cdc.write_packet(&[]).await;
+    }
 }
 
 /// Which on-screen layout the display task last painted. The normal layout

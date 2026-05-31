@@ -16,7 +16,7 @@
 //! influences it only by sending events to [`router_task`].
 
 use defmt::warn;
-use embassy_futures::select::{select4, Either4};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Instant};
@@ -29,6 +29,7 @@ use crate::hal::{buttons, encoder, expression, leds};
 use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
 use crate::pins;
+use crate::proto;
 use crate::storage::{Settings, Storage};
 use crate::tuner::TunerState;
 
@@ -63,6 +64,56 @@ pub type DisplaySender = Sender<'static, CriticalSectionRawMutex, DisplayCmd, DI
 /// Receiver half — held by the display task.
 pub type DisplayReceiver = Receiver<'static, CriticalSectionRawMutex, DisplayCmd, DISPLAY_QUEUE_DEPTH>;
 
+// ── Config-sync channels (cdc_task ↔ router) ───────────────────────────
+// The CDC task (in the bin) owns the wire codec; the router owns the live
+// config + flash store. A GET/SET frame becomes a [`ConfigReq`] sent to the
+// router, which answers with a [`ConfigResp`]. It's a strict request/response
+// from a single client, so depth 1 suffices and no reply can be misattributed.
+
+/// A config-sync request from the CDC task to the router.
+//
+// `Set` carries a whole `RuntimeConfig` (~2.4 KB) while `Get` is empty — a
+// large variant spread. With no allocator (`no_std`) there's nothing to box
+// into, and the config must move by value through the channel, so the spread is
+// intrinsic; the channel is depth 1, so only one lives in `.bss` at a time.
+#[allow(clippy::large_enum_variant)]
+pub enum ConfigReq {
+    /// Read the live config — the router answers [`ConfigResp::Config`].
+    Get,
+    /// Replace the live config with a validated one (persist + hot-reload).
+    /// The CDC task has already deserialized and checked it is non-empty.
+    Set(RuntimeConfig),
+}
+
+/// The router's answer to a [`ConfigReq`].
+#[allow(clippy::large_enum_variant)] // see [`ConfigReq`]: no allocator to box into
+pub enum ConfigResp {
+    /// The live config, answering [`ConfigReq::Get`].
+    Config(RuntimeConfig),
+    /// A [`ConfigReq::Set`] succeeded (persisted + applied live).
+    Ok,
+    /// A [`ConfigReq::Set`] failed; carries the wire error code to relay.
+    Err(proto::ProtoError),
+}
+
+/// Depth of the config-sync channels. Request/response with one client → 1.
+pub const CONFIG_QUEUE_DEPTH: usize = 1;
+/// Channel carrying a [`ConfigReq`] from the CDC task to the router.
+pub type ConfigReqChannel = Channel<CriticalSectionRawMutex, ConfigReq, CONFIG_QUEUE_DEPTH>;
+/// Sender half — held by the CDC task.
+pub type ConfigReqSender = Sender<'static, CriticalSectionRawMutex, ConfigReq, CONFIG_QUEUE_DEPTH>;
+/// Receiver half — held by the router.
+pub type ConfigReqReceiver =
+    Receiver<'static, CriticalSectionRawMutex, ConfigReq, CONFIG_QUEUE_DEPTH>;
+/// Channel carrying a [`ConfigResp`] from the router back to the CDC task.
+pub type ConfigRespChannel = Channel<CriticalSectionRawMutex, ConfigResp, CONFIG_QUEUE_DEPTH>;
+/// Sender half — held by the router.
+pub type ConfigRespSender =
+    Sender<'static, CriticalSectionRawMutex, ConfigResp, CONFIG_QUEUE_DEPTH>;
+/// Receiver half — held by the CDC task.
+pub type ConfigRespReceiver =
+    Receiver<'static, CriticalSectionRawMutex, ConfigResp, CONFIG_QUEUE_DEPTH>;
+
 /// Active display mode — what the screen shows and how inputs route.
 enum Mode {
     /// Live performance: footswitches dispatch page actions; encoder/expr → CC.
@@ -83,17 +134,27 @@ pub struct Router {
     settings: Settings,
     /// Flash store — owned here so the menu can persist.
     storage: Storage,
+    /// Scratch for persisting a pushed config (`Storage::store_config` needs
+    /// `≥ CONFIG_SCRATCH_LEN`). Reuses the buffer the bin allocates for the
+    /// boot-time config load, rather than carrying a second large array.
+    config_scratch: &'static mut [u8],
     mode: Mode,
     menu: Menu,
     /// Tuner readout (driven by inbound MIDI while in [`Mode::Tuner`]).
     tuner: TunerState,
     /// Accumulated encoder-driven value for [`ENCODER_CC`] (`0..=127`).
     enc_value: u8,
+    /// Current program number, for [`Action::ProgramChangeStep`] (inc/dec).
+    /// Set by any absolute [`Action::ProgramChange`]; stepped by inc/dec.
+    current_program: u8,
     /// Per-CC toggle state (on/off), indexed by CC number. Cleared on page
     /// change; synced from incoming MIDI CC.
     toggles: [bool; 128],
     /// Press timestamps for footswitch long-press detection, per switch index.
     press_at: [Option<Instant>; buttons::COUNT],
+    /// For [`CcValue::Momentary`]: the CC a held switch is driving (sent `127`
+    /// on press), so its release can send `0`. `None` = not momentary-held.
+    momentary_active: [Option<u8>; buttons::COUNT],
     /// Encoder push timestamp, for its long-press (enter/exit the menu).
     enc_press_at: Option<Instant>,
     display: DisplaySender,
@@ -105,10 +166,12 @@ pub struct Router {
 impl Router {
     /// Build a router bound to its output channels, the loaded settings, and
     /// the flash store (for menu persistence).
+    #[allow(clippy::too_many_arguments)] // wiring constructor: state + four output channels
     pub fn new(
         config: RuntimeConfig,
         settings: Settings,
         storage: Storage,
+        config_scratch: &'static mut [u8],
         display: DisplaySender,
         leds: leds::LedSender,
         midi_cmd: mux::MidiCmdSender,
@@ -119,12 +182,15 @@ impl Router {
             page: 0,
             settings,
             storage,
+            config_scratch,
             mode: Mode::Performance,
             menu: Menu::new(),
             tuner: TunerState::new(),
             enc_value: 0,
+            current_program: 0,
             toggles: [false; 128],
             press_at: [None; buttons::COUNT],
+            momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
             display,
             leds,
@@ -218,10 +284,25 @@ impl Router {
             return; // defensive: ignore out-of-range indices
         }
         if ev.pressed {
+            // A momentary CC fires on the press edge (127); its release (below)
+            // sends 0. Everything else waits for release to tell long from short.
+            if let Action::MidiCc { cc, value: CcValue::Momentary } =
+                self.current_page().buttons[idx].on_press
+            {
+                self.send_momentary(idx, cc, true);
+                self.momentary_active[idx] = Some(cc);
+            }
             self.press_at[idx] = Some(Instant::now());
             return;
         }
-        // Released: pick long- vs short-press by held duration. Dispatching
+        // Released. A held momentary completes here (send 0) and short-circuits
+        // the long/short dispatch entirely.
+        if let Some(cc) = self.momentary_active[idx].take() {
+            self.press_at[idx] = None;
+            self.send_momentary(idx, cc, false);
+            return;
+        }
+        // Otherwise: pick long- vs short-press by held duration. Dispatching
         // on release is what lets a single switch carry both actions.
         let long = self.press_at[idx]
             .take()
@@ -254,6 +335,11 @@ impl Router {
                         self.toggles[cc as usize] = on;
                         (if on { 127 } else { 0 }, true, on)
                     }
+                    // Momentary is edge-driven in `on_button_perf` (press=127,
+                    // release=0). Reaching dispatch means it was mapped without a
+                    // release edge (e.g. a long-press) — do nothing rather than
+                    // leave the CC stuck high.
+                    CcValue::Momentary => return,
                 };
                 let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
                 let _ = self.display.try_send(DisplayCmd::Action { label, toggle, on });
@@ -262,6 +348,7 @@ impl Router {
                 }
             }
             Action::ProgramChange { program } => {
+                self.current_program = program;
                 let _ = self
                     .midi_cmd
                     .try_send(MidiCmd::ProgramChange { channel, program });
@@ -286,7 +373,28 @@ impl Router {
             // the tuner; leaving is handled by the footswitch/encoder in
             // `Mode::Tuner` (see `on_button` / `on_encoder`).
             Action::TunerToggle => self.enter_tuner(),
+            Action::ProgramChangeStep(step) => {
+                let program = (self.current_program as i16 + step as i16).clamp(0, 127) as u8;
+                self.current_program = program;
+                let _ = self
+                    .midi_cmd
+                    .try_send(MidiCmd::ProgramChange { channel, program });
+                self.announce(label);
+            }
         }
+    }
+
+    /// Send a momentary CC edge (`127` on press, `0` on release) and reflect it
+    /// on the status line. `idx` is a validated switch index.
+    fn send_momentary(&self, idx: usize, cc: u8, on: bool) {
+        let channel = self.wire_channel();
+        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
+            channel,
+            cc,
+            value: if on { 127 } else { 0 },
+        });
+        let label = self.current_page().buttons[idx].label.clone();
+        let _ = self.display.try_send(DisplayCmd::Action { label, toggle: true, on });
     }
 
     /// Show a non-toggle action's label on the display.
@@ -477,6 +585,51 @@ impl Router {
             warn!("router: settings save failed");
         }
     }
+
+    /// Publish the config's MIDI-thru routes to the transport layer (`mux`),
+    /// which forwards inbound MIDI per them. Called at startup and on every
+    /// config apply.
+    fn sync_thru(&self) {
+        mux::set_thru(self.config.midi_thru);
+    }
+
+    // ── config sync (webapp ↔ device over CDC) ─────────────────────────
+    /// Service a config-sync request from the CDC task.
+    ///
+    /// `Get` returns a clone of the live config for the CDC task to serialize.
+    /// `Set` (already validated by the CDC task) is persisted to flash and then
+    /// hot-reloaded: adopt the new config and repaint from a clean slate —
+    /// performance mode, page 0, toggles cleared — exactly as a fresh boot into
+    /// it would. Replies `Ok`, or an error code the CDC task relays as `ERROR`.
+    async fn on_config_req(&mut self, req: ConfigReq) -> ConfigResp {
+        match req {
+            ConfigReq::Get => ConfigResp::Config(self.config.clone()),
+            ConfigReq::Set(cfg) => {
+                // Defensive: an empty page list would panic `page()`. The CDC
+                // task already rejects this, so it's belt-and-suspenders.
+                if cfg.page_count() == 0 {
+                    return ConfigResp::Err(proto::ProtoError::BadPayload);
+                }
+                if self
+                    .storage
+                    .store_config(&cfg, self.config_scratch)
+                    .await
+                    .is_err()
+                {
+                    warn!("router: config store failed");
+                    return ConfigResp::Err(proto::ProtoError::StoreFailed);
+                }
+                self.config = cfg;
+                self.sync_thru();
+                self.mode = Mode::Performance;
+                self.page = 0;
+                self.toggles = [false; 128];
+                self.refresh_page();
+                defmt::info!("router: config applied ({} page(s))", self.config.page_count());
+                ConfigResp::Ok
+            }
+        }
+    }
 }
 
 /// Scale an LED colour by a brightness percentage (`0..=100`).
@@ -500,6 +653,11 @@ fn build_sysex(cmd: SysexCmd) -> Result<sysex::SysEx, sysex::SysExError> {
 }
 
 /// Drive the router: select across every input channel, dispatch each event.
+///
+/// Five inputs, so the four hardware channels nest inside a [`select`] with the
+/// config-sync request channel (`embassy_futures` tops out at `select4`). The
+/// channel receive futures are cancellation-safe, so the branch that doesn't
+/// win simply re-arms next iteration with no lost messages.
 #[embassy_executor::task]
 pub async fn router_task(
     mut r: Router,
@@ -507,21 +665,31 @@ pub async fn router_task(
     encoder: encoder::EncoderReceiver,
     expr: expression::ExprReceiver,
     midi_rx: mux::MidiRxReceiver,
+    config_req: ConfigReqReceiver,
+    config_resp: ConfigRespSender,
 ) {
     r.refresh_page(); // initial paint
+    r.sync_thru(); // publish the config's MIDI-thru routes to the mux
     loop {
-        match select4(
-            buttons.receive(),
-            encoder.receive(),
-            expr.receive(),
-            midi_rx.receive(),
+        match select(
+            select4(
+                buttons.receive(),
+                encoder.receive(),
+                expr.receive(),
+                midi_rx.receive(),
+            ),
+            config_req.receive(),
         )
         .await
         {
-            Either4::First(b) => r.on_button(b).await,
-            Either4::Second(e) => r.on_encoder(e).await,
-            Either4::Third(x) => r.on_expr(x),
-            Either4::Fourth(m) => r.on_midi_rx(m),
+            Either::First(Either4::First(b)) => r.on_button(b).await,
+            Either::First(Either4::Second(e)) => r.on_encoder(e).await,
+            Either::First(Either4::Third(x)) => r.on_expr(x),
+            Either::First(Either4::Fourth(m)) => r.on_midi_rx(m),
+            Either::Second(req) => {
+                let resp = r.on_config_req(req).await;
+                config_resp.send(resp).await;
+            }
         }
     }
 }

@@ -53,6 +53,7 @@ static RX: mux::MidiRxChannel = Channel::new();
 static CMD: mux::MidiCmdChannel = Channel::new();
 static SYSEX_IN: mux::SysExChannel = Channel::new();
 static SYSEX_OUT: mux::SysExChannel = Channel::new();
+static THRU: mux::ThruChannel = Channel::new();
 
 type UsbDriver = Driver<'static, USB>;
 
@@ -138,9 +139,9 @@ async fn main(spawner: Spawner) {
     // ── Run the mux + monitor + injector forever ───────────────────────
     join(
         join3(
-            mux::usb_in_loop(usb_rx, &RX, &SYSEX_IN),
-            mux::din_in_loop(din_rx, &RX, &SYSEX_IN),
-            mux::out_loop(usb_tx, din_tx, &CMD, &SYSEX_OUT),
+            mux::usb_in_loop(usb_rx, &RX, &SYSEX_IN, THRU.sender()),
+            mux::din_in_loop(din_rx, &RX, &SYSEX_IN, THRU.sender()),
+            mux::out_loop(usb_tx, din_tx, &CMD, &SYSEX_OUT, THRU.receiver()),
         ),
         join(monitor, injector),
     )

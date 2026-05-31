@@ -52,6 +52,12 @@ pub enum CcValue {
     Fixed(u8),
     /// Flip between `0` and `127`, tracking the router's per-CC toggle state.
     Toggle,
+    /// Non-latching: send `127` on the press edge and `0` on release. Because it
+    /// acts on both edges it ignores the button's long-press action.
+    ///
+    /// NOTE: serde keys enum variants by position — only ever *append* variants
+    /// here (a reorder would silently re-interpret every stored/pushed config).
+    Momentary,
 }
 
 /// A named BOSS Katana SysEx command. The config stays free of raw Roland
@@ -91,6 +97,12 @@ pub enum Action {
     /// amp's tuner). Leaving the tuner is a mode-level gesture, not an action —
     /// see `app::Router`.
     TunerToggle,
+    /// Step the program number by a signed delta and send the resulting Program
+    /// Change (preset/bank up or down). The router tracks the current program
+    /// (also set by [`Action::ProgramChange`]) and clamps the result to `0..=127`.
+    ///
+    /// NOTE: append-only — see [`CcValue::Momentary`].
+    ProgramChangeStep(i8),
 }
 
 impl Action {
@@ -287,6 +299,34 @@ pub const LABEL_CAP: usize = 12;
 /// Max bytes of a page name.
 pub const NAME_CAP: usize = 16;
 
+/// A guaranteed upper bound (bytes) on the postcard-serialized size of any
+/// [`RuntimeConfig`] with at most [`MAX_PAGES`] pages — i.e. on the length of
+/// the slice [`serialize`] can ever return.
+///
+/// Derived from the model's fixed caps so it tracks the model automatically:
+/// grow a cap and this grows with it, which in turn forces the flash store's
+/// scratch buffer to keep up (see the `const` assertion in `storage.rs` — the
+/// settings store must size its scan buffer against this, since the config blob
+/// is the largest item in its key-value map).
+///
+/// Worst-case postcard layout (every cap full, largest enum variants):
+/// - `RuntimeConfig` → `Vec<OwnedPage, MAX_PAGES>` + `ThruRoutes`
+/// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
+/// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
+/// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action`
+/// - `Action`     → 1-byte discriminant + ≤3-byte payload (`MidiCc{ cc, CcValue::Fixed }`)
+/// - `ThruRoutes` → 4 × `bool` (1 byte each)
+pub const MAX_SERIALIZED_LEN: usize = {
+    // 1-byte enum discriminant + largest variant payload.
+    // `MidiCc { cc: u8, value: CcValue }` = cc(1) + CcValue(disc 1 + Fixed u8 1) = 3.
+    const ACTION_MAX: usize = 1 + 3;
+    // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
+    const BUTTON_MAX: usize = (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX;
+    const PAGE_MAX: usize = (1 + NAME_CAP) + PAGE_BUTTONS * BUTTON_MAX;
+    const THRU_MAX: usize = 4; // ThruRoutes: 4 bools
+    1 /* Vec length varint */ + MAX_PAGES * PAGE_MAX + THRU_MAX
+};
+
 /// An owned button label.
 pub type Label = heapless::String<LABEL_CAP>;
 /// An owned page name.
@@ -308,10 +348,45 @@ pub struct OwnedPage {
     pub buttons: [OwnedButton; PAGE_BUTTONS],
 }
 
-/// A complete user configuration: an ordered list of owned pages.
+/// MIDI-thru routing matrix — which inbound port is forwarded to which outbound
+/// port. Each route is independent and defaults off (no forwarding). It is a
+/// device-global, applied in [`crate::midi::mux`] (the transport layer reads it
+/// live), not per page.
+#[derive(Clone, Copy, PartialEq, Eq, Default, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub struct ThruRoutes {
+    /// Forward USB-MIDI input to the DIN output.
+    pub usb_to_din: bool,
+    /// Forward DIN input to the USB-MIDI output.
+    pub din_to_usb: bool,
+    /// Forward DIN input back to the DIN output (5-pin daisy-chain passthrough).
+    pub din_to_din: bool,
+    /// Forward USB-MIDI input back to the USB-MIDI output (host loopback; rare).
+    pub usb_to_usb: bool,
+}
+
+impl ThruRoutes {
+    /// No routing — the default and the `static` initialiser in the mux.
+    pub const NONE: Self = Self {
+        usb_to_din: false,
+        din_to_usb: false,
+        din_to_din: false,
+        usb_to_usb: false,
+    };
+}
+
+/// A complete user configuration: an ordered list of owned pages plus the
+/// device-global MIDI-thru routing.
+///
+/// NOTE: serde/postcard serializes fields in declaration order — `midi_thru` is
+/// **appended** after `pages`. Adding a struct field is a breaking wire change
+/// (an older blob lacks the trailing bytes and fails to deserialize, falling
+/// back to the default on upgrade), so [`crate::proto::PROTO_VERSION`] is bumped
+/// alongside it. Only append; never reorder.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeConfig {
     pub pages: heapless::Vec<OwnedPage, MAX_PAGES>,
+    /// Device-global MIDI-thru routing, applied by [`crate::midi::mux`].
+    pub midi_thru: ThruRoutes,
 }
 
 /// Copy `s` into a fixed-cap string, truncating at a char boundary if it
@@ -356,7 +431,10 @@ impl RuntimeConfig {
                 break;
             }
         }
-        Self { pages }
+        Self {
+            pages,
+            midi_thru: ThruRoutes::NONE,
+        }
     }
 
     /// The firmware's built-in default, as an owned config.
