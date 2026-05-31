@@ -299,6 +299,31 @@ pub const LABEL_CAP: usize = 12;
 /// Max bytes of a page name.
 pub const NAME_CAP: usize = 16;
 
+/// A guaranteed upper bound (bytes) on the postcard-serialized size of any
+/// [`RuntimeConfig`] with at most [`MAX_PAGES`] pages — i.e. on the length of
+/// the slice [`serialize`] can ever return.
+///
+/// Derived from the model's fixed caps so it tracks the model automatically:
+/// grow a cap and this grows with it, which in turn forces the flash store's
+/// scratch buffer to keep up (see the `const` assertion in `storage.rs` — the
+/// settings store must size its scan buffer against this, since the config blob
+/// is the largest item in its key-value map).
+///
+/// Worst-case postcard layout (every cap full, largest enum variants):
+/// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
+/// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
+/// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action`
+/// - `Action`     → 1-byte discriminant + ≤3-byte payload (`MidiCc{ cc, CcValue::Fixed }`)
+pub const MAX_SERIALIZED_LEN: usize = {
+    // 1-byte enum discriminant + largest variant payload.
+    // `MidiCc { cc: u8, value: CcValue }` = cc(1) + CcValue(disc 1 + Fixed u8 1) = 3.
+    const ACTION_MAX: usize = 1 + 3;
+    // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
+    const BUTTON_MAX: usize = (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX;
+    const PAGE_MAX: usize = (1 + NAME_CAP) + PAGE_BUTTONS * BUTTON_MAX;
+    1 /* Vec length varint */ + MAX_PAGES * PAGE_MAX
+};
+
 /// An owned button label.
 pub type Label = heapless::String<LABEL_CAP>;
 /// An owned page name.
