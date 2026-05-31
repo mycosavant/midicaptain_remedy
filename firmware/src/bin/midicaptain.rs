@@ -48,7 +48,6 @@ use heapless::String;
 use static_cell::StaticCell;
 
 use midicaptain_firmware::app::{self, Router};
-use midicaptain_firmware::config::DEFAULT_CONFIG;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
 use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
@@ -57,7 +56,7 @@ use midicaptain_firmware::hal::leds::{self, LedDriver};
 use midicaptain_firmware::hal::buttons;
 use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
-use midicaptain_firmware::storage::Storage;
+use midicaptain_firmware::storage::{self, Storage};
 use midicaptain_firmware::ui::{Palette, TextPanel, Widget};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -207,10 +206,19 @@ async fn main(spawner: Spawner) {
     // ── Footswitch scanner (array created above, for the boot recovery combo) ──
     spawner.spawn(buttons::buttons_task(footswitches, BUTTON_CH.sender()).unwrap());
 
-    // ── Router (last: it depends on settings loaded above, and paints the
-    // first page over the display task's "booting…" splash) ──────────────
+    // ── User config: load from flash (falls back to the baked default on a
+    // blank/corrupt device). The one-shot scratch buffer is too large to keep
+    // inside `Storage` for the program's lifetime, so it lives here. ────────
+    static CONFIG_SCRATCH: StaticCell<[u8; storage::CONFIG_SCRATCH_LEN]> = StaticCell::new();
+    let config = storage
+        .load_config(CONFIG_SCRATCH.init([0; storage::CONFIG_SCRATCH_LEN]))
+        .await;
+    info!("config: {} page(s)", config.page_count());
+
+    // ── Router (last: it depends on settings + config loaded above, and
+    // paints the first page over the display task's "booting…" splash) ──────
     let router = Router::new(
-        DEFAULT_CONFIG,
+        config,
         settings,
         storage,
         DISPLAY_CH.sender(),
@@ -293,7 +301,7 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
     loop {
         match commands.receive().await {
             DisplayCmd::Page { name, index, total } => {
-                title.set_text(name);
+                title.set_text(&name);
                 let _ = title.render(&mut display);
                 let mut line: String<32> = String::new();
                 let _ = write!(line, "Page {}/{}", index, total);
@@ -303,9 +311,9 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
             DisplayCmd::Action { label, toggle, on } => {
                 let mut line: String<32> = String::new();
                 if toggle {
-                    let _ = write!(line, "{} {}", label, if on { "ON" } else { "OFF" });
+                    let _ = write!(line, "{} {}", label.as_str(), if on { "ON" } else { "OFF" });
                 } else {
-                    let _ = write!(line, "{}", label);
+                    let _ = write!(line, "{}", label.as_str());
                 }
                 status.set_text(&line);
                 let _ = status.render(&mut display);

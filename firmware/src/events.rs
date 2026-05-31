@@ -80,21 +80,23 @@ pub struct LedFrame {
 
 /// A render request to the display task. Grows into modes (status, tuner,
 /// menu, value bar) as features land — add variants, keep the router's
-/// match exhaustive. The `&'static str` payloads come from the baked-in
-/// `config` (also `'static`), so this stays `Copy`.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+/// match exhaustive. [`Self::Page`]/[`Self::Action`] labels are **owned**
+/// (they come from the runtime [`crate::config::RuntimeConfig`], not `'static`
+/// data), so this is `Clone`, not `Copy`; a hand-written [`defmt::Format`]
+/// (below) keeps it loggable without leaning on a heapless feature.
+#[derive(Clone, PartialEq, Eq)]
 pub enum DisplayCmd {
     /// The active page changed (or initial paint): show its name and
     /// 1-based position (`index` of `total`).
     Page {
-        name: &'static str,
+        name: crate::config::PageName,
         index: u8,
         total: u8,
     },
     /// A button was actuated: briefly show its label, plus on/off when the
     /// button is a toggle (`toggle = false` hides the state suffix).
     Action {
-        label: &'static str,
+        label: crate::config::Label,
         toggle: bool,
         on: bool,
     },
@@ -113,6 +115,31 @@ pub enum DisplayCmd {
         step: CalStep,
         raw: u16,
     },
+}
+
+// Hand-written so the owned-string variants can format without depending on a
+// heapless `defmt` feature (and its defmt-version coupling). The `&str` fields
+// print via `{=str}`; the small enums via their own derived `Format`.
+impl defmt::Format for DisplayCmd {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            DisplayCmd::Page { name, index, total } => {
+                defmt::write!(f, "Page({=str} {}/{})", name.as_str(), index, total)
+            }
+            DisplayCmd::Action { label, toggle, on } => {
+                defmt::write!(f, "Action({=str} toggle={} on={})", label.as_str(), toggle, on)
+            }
+            DisplayCmd::Menu {
+                title,
+                value,
+                kind,
+                editing,
+            } => defmt::write!(f, "Menu({=str} {} {} editing={})", *title, value, kind, editing),
+            DisplayCmd::Cal { pedal, step, raw } => {
+                defmt::write!(f, "Cal(p{} {} raw={})", pedal, step, raw)
+            }
+        }
+    }
 }
 
 /// How a [`DisplayCmd::Menu`] value is rendered.
