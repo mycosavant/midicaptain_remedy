@@ -144,11 +144,17 @@ pub struct Router {
     tuner: TunerState,
     /// Accumulated encoder-driven value for [`ENCODER_CC`] (`0..=127`).
     enc_value: u8,
+    /// Current program number, for [`Action::ProgramChangeStep`] (inc/dec).
+    /// Set by any absolute [`Action::ProgramChange`]; stepped by inc/dec.
+    current_program: u8,
     /// Per-CC toggle state (on/off), indexed by CC number. Cleared on page
     /// change; synced from incoming MIDI CC.
     toggles: [bool; 128],
     /// Press timestamps for footswitch long-press detection, per switch index.
     press_at: [Option<Instant>; buttons::COUNT],
+    /// For [`CcValue::Momentary`]: the CC a held switch is driving (sent `127`
+    /// on press), so its release can send `0`. `None` = not momentary-held.
+    momentary_active: [Option<u8>; buttons::COUNT],
     /// Encoder push timestamp, for its long-press (enter/exit the menu).
     enc_press_at: Option<Instant>,
     display: DisplaySender,
@@ -181,8 +187,10 @@ impl Router {
             menu: Menu::new(),
             tuner: TunerState::new(),
             enc_value: 0,
+            current_program: 0,
             toggles: [false; 128],
             press_at: [None; buttons::COUNT],
+            momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
             display,
             leds,
@@ -276,10 +284,25 @@ impl Router {
             return; // defensive: ignore out-of-range indices
         }
         if ev.pressed {
+            // A momentary CC fires on the press edge (127); its release (below)
+            // sends 0. Everything else waits for release to tell long from short.
+            if let Action::MidiCc { cc, value: CcValue::Momentary } =
+                self.current_page().buttons[idx].on_press
+            {
+                self.send_momentary(idx, cc, true);
+                self.momentary_active[idx] = Some(cc);
+            }
             self.press_at[idx] = Some(Instant::now());
             return;
         }
-        // Released: pick long- vs short-press by held duration. Dispatching
+        // Released. A held momentary completes here (send 0) and short-circuits
+        // the long/short dispatch entirely.
+        if let Some(cc) = self.momentary_active[idx].take() {
+            self.press_at[idx] = None;
+            self.send_momentary(idx, cc, false);
+            return;
+        }
+        // Otherwise: pick long- vs short-press by held duration. Dispatching
         // on release is what lets a single switch carry both actions.
         let long = self.press_at[idx]
             .take()
@@ -312,6 +335,11 @@ impl Router {
                         self.toggles[cc as usize] = on;
                         (if on { 127 } else { 0 }, true, on)
                     }
+                    // Momentary is edge-driven in `on_button_perf` (press=127,
+                    // release=0). Reaching dispatch means it was mapped without a
+                    // release edge (e.g. a long-press) — do nothing rather than
+                    // leave the CC stuck high.
+                    CcValue::Momentary => return,
                 };
                 let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
                 let _ = self.display.try_send(DisplayCmd::Action { label, toggle, on });
@@ -320,6 +348,7 @@ impl Router {
                 }
             }
             Action::ProgramChange { program } => {
+                self.current_program = program;
                 let _ = self
                     .midi_cmd
                     .try_send(MidiCmd::ProgramChange { channel, program });
@@ -344,7 +373,28 @@ impl Router {
             // the tuner; leaving is handled by the footswitch/encoder in
             // `Mode::Tuner` (see `on_button` / `on_encoder`).
             Action::TunerToggle => self.enter_tuner(),
+            Action::ProgramChangeStep(step) => {
+                let program = (self.current_program as i16 + step as i16).clamp(0, 127) as u8;
+                self.current_program = program;
+                let _ = self
+                    .midi_cmd
+                    .try_send(MidiCmd::ProgramChange { channel, program });
+                self.announce(label);
+            }
         }
+    }
+
+    /// Send a momentary CC edge (`127` on press, `0` on release) and reflect it
+    /// on the status line. `idx` is a validated switch index.
+    fn send_momentary(&self, idx: usize, cc: u8, on: bool) {
+        let channel = self.wire_channel();
+        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
+            channel,
+            cc,
+            value: if on { 127 } else { 0 },
+        });
+        let label = self.current_page().buttons[idx].label.clone();
+        let _ = self.display.try_send(DisplayCmd::Action { label, toggle: true, on });
     }
 
     /// Show a non-toggle action's label on the display.

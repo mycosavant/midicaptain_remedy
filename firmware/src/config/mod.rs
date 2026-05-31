@@ -52,6 +52,12 @@ pub enum CcValue {
     Fixed(u8),
     /// Flip between `0` and `127`, tracking the router's per-CC toggle state.
     Toggle,
+    /// Non-latching: send `127` on the press edge and `0` on release. Because it
+    /// acts on both edges it ignores the button's long-press action.
+    ///
+    /// NOTE: serde keys enum variants by position — only ever *append* variants
+    /// here (a reorder would silently re-interpret every stored/pushed config).
+    Momentary,
 }
 
 /// A named BOSS Katana SysEx command. The config stays free of raw Roland
@@ -91,6 +97,12 @@ pub enum Action {
     /// amp's tuner). Leaving the tuner is a mode-level gesture, not an action —
     /// see `app::Router`.
     TunerToggle,
+    /// Step the program number by a signed delta and send the resulting Program
+    /// Change (preset/bank up or down). The router tracks the current program
+    /// (also set by [`Action::ProgramChange`]) and clamps the result to `0..=127`.
+    ///
+    /// NOTE: append-only — see [`CcValue::Momentary`].
+    ProgramChangeStep(i8),
 }
 
 impl Action {
