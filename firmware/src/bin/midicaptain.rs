@@ -40,6 +40,7 @@ use embassy_rp::uart::{
     BufferedInterruptHandler, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig,
 };
 use embassy_rp::usb::{Driver, InterruptHandler as UsbIrq};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcState};
 use embassy_usb::class::midi::{MidiClass, Receiver as UsbMidiRx, Sender as UsbMidiTx};
 use embassy_usb::{Builder, Config as UsbConfig};
 use embedded_graphics::mono_font::ascii::FONT_10X20;
@@ -56,6 +57,7 @@ use midicaptain_firmware::hal::leds::{self, LedDriver};
 use midicaptain_firmware::hal::buttons;
 use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
+use midicaptain_firmware::proto;
 use midicaptain_firmware::storage::{self, Storage};
 use midicaptain_firmware::ui::{Palette, TextPanel, TunerView, Widget};
 use {defmt_rtt as _, panic_probe as _};
@@ -167,13 +169,15 @@ async fn main(spawner: Spawner) {
     usb_config.max_packet_size_0 = 64;
 
     let mut builder = {
-        static CFG: StaticCell<[u8; 256]> = StaticCell::new();
+        // Config descriptor holds MIDI + CDC interfaces (composite), so it is
+        // sized generously to avoid a build-time descriptor overflow.
+        static CFG: StaticCell<[u8; 512]> = StaticCell::new();
         static BOS: StaticCell<[u8; 256]> = StaticCell::new();
         static CTL: StaticCell<[u8; 64]> = StaticCell::new();
         Builder::new(
             driver,
             usb_config,
-            CFG.init([0; 256]),
+            CFG.init([0; 512]),
             BOS.init([0; 256]),
             &mut [],
             CTL.init([0; 64]),
@@ -181,8 +185,14 @@ async fn main(spawner: Spawner) {
     };
     let midi_class = MidiClass::new(&mut builder, 1, 1, 64);
     let (usb_tx, usb_rx) = midi_class.split();
+    // USB-CDC (ACM) for webapp ↔ device config sync — composite alongside MIDI.
+    let cdc_class = {
+        static CDC_STATE: StaticCell<CdcState> = StaticCell::new();
+        CdcAcmClass::new(&mut builder, CDC_STATE.init(CdcState::new()), 64)
+    };
     let usb = builder.build();
     spawner.spawn(usb_task(usb).unwrap());
+    spawner.spawn(cdc_task(cdc_class).unwrap());
 
     static TX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -267,6 +277,95 @@ async fn din_in_task(din_rx: BufferedUartRx) -> ! {
 #[embassy_executor::task]
 async fn out_task(usb_tx: UsbMidiTx<'static, UsbDriver>, din_tx: BufferedUartTx) -> ! {
     mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT).await
+}
+
+// ── USB-CDC config-sync endpoint ────────────────────────────────────────
+// Phase B-2a: brings the CDC link up and proves the framing end-to-end with
+// HELLO. The config GET/SET handling + the router config channel are B-2b.
+
+/// Owns the CDC-ACM endpoints. Reassembles COBS frames (host bytes delimited
+/// by `0x00`), decodes each via [`proto`], and replies. Answers `HELLO` with
+/// the protocol version; rejects any other opcode with `ERROR(BadCommand)`.
+#[embassy_executor::task]
+async fn cdc_task(mut cdc: CdcAcmClass<'static, UsbDriver>) -> ! {
+    static ACC: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
+    static BODY: StaticCell<[u8; proto::MAX_BODY]> = StaticCell::new();
+    static OUT: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
+    let acc = ACC.init([0; proto::MAX_FRAME_LEN]);
+    let body = BODY.init([0; proto::MAX_BODY]);
+    let out = OUT.init([0; proto::MAX_FRAME_LEN]);
+    let mut pkt = [0u8; 64];
+
+    loop {
+        cdc.wait_connection().await;
+        info!("cdc: host connected");
+        let mut acc_len = 0usize;
+        loop {
+            let n = match cdc.read_packet(&mut pkt).await {
+                Ok(n) => n,
+                Err(_) => break, // host closed / bus reset → await reconnect
+            };
+            for &b in &pkt[..n] {
+                if b == 0 {
+                    handle_cdc_frame(&acc[..acc_len], &mut cdc, body, out).await;
+                    acc_len = 0;
+                } else if acc_len < acc.len() {
+                    acc[acc_len] = b;
+                    acc_len += 1;
+                } else {
+                    acc_len = 0; // frame too long → resync at the next delimiter
+                }
+            }
+        }
+    }
+}
+
+/// Decode one frame and reply. `body` is scratch for both the decode and the
+/// reply encode — used sequentially (the decoded `cmd`/`seq` are copied out
+/// before `body` is reused for the reply).
+async fn handle_cdc_frame(
+    frame: &[u8],
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    body: &mut [u8],
+    out: &mut [u8],
+) {
+    if frame.is_empty() {
+        return;
+    }
+    let (cmd, seq) = match proto::decode(frame, body) {
+        Ok(f) => (f.cmd, f.seq),
+        Err(e) => {
+            warn!("cdc: bad frame ({})", e);
+            return; // no seq to echo → drop silently
+        }
+    };
+    let mut payload = [0u8; 1];
+    let (reply_cmd, plen) = match cmd {
+        proto::cmd::HELLO => {
+            payload[0] = proto::PROTO_VERSION;
+            (proto::cmd::HELLO, 1)
+        }
+        other => {
+            warn!("cdc: unhandled cmd {=u8}", other);
+            payload[0] = proto::ProtoError::BadCommand as u8;
+            (proto::cmd::ERROR, 1)
+        }
+    };
+    match proto::encode(reply_cmd, seq, &payload[..plen], body, out) {
+        Ok(n) => write_cdc_frame(cdc, &out[..n]).await,
+        Err(e) => warn!("cdc: encode failed ({})", e),
+    }
+}
+
+/// Write a full frame to the host, chunked to the CDC max packet size. The
+/// trailing `0x00` delimiter is part of `frame`, so the host parses by
+/// delimiter regardless of packetisation.
+async fn write_cdc_frame(cdc: &mut CdcAcmClass<'static, UsbDriver>, frame: &[u8]) {
+    for chunk in frame.chunks(64) {
+        if cdc.write_packet(chunk).await.is_err() {
+            return; // disconnected mid-write
+        }
+    }
 }
 
 /// Which on-screen layout the display task last painted. The normal layout
