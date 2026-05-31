@@ -44,10 +44,15 @@ The green gate (run before pushing) is both of:
 
 ```powershell
 cargo build  --release --bins --examples
-cargo clippy --release --bins --examples -- -D warnings
+cargo clippy --release --lib --bins --examples -- -D warnings
 ```
 
 Flash the app binary or a particular example — see below for the two paths.
+
+> **Validating a change?** [`TESTING.md`](TESTING.md) is the full playbook —
+> the gate, the on-hardware self-tests, on-device manual checks, the CDC /
+> MIDI-monitor tooling, a per-feature validation matrix, and a pre-merge
+> checklist.
 
 ## Flashing
 

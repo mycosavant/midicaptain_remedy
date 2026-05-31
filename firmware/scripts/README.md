@@ -4,6 +4,10 @@ Small host utilities for developing and validating the MIDI Captain Remedy
 firmware. They make the device observable from the command line — readable by a
 human, and (deliberately) parseable by tooling or an agent driving the hardware.
 
+For the end-to-end validation playbook (gate, self-tests, manual checks, feature
+matrix, pre-merge checklist) see [`../TESTING.md`](../TESTING.md). This file
+documents the host tools themselves.
+
 The three observation surfaces, and the tool for each:
 
 | Surface | What you see | Tool |
