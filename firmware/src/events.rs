@@ -105,27 +105,77 @@ pub struct LedFrame {
     pub switches: [LedColor; 10],
 }
 
-/// A render request to the display task. Grows into modes (status, tuner,
-/// menu, value bar) as features land — add variants, keep the router's
-/// match exhaustive. [`Self::Page`]/[`Self::Action`] labels are **owned**
-/// (they come from the runtime [`crate::config::RuntimeConfig`], not `'static`
-/// data), so this is `Clone`, not `Copy`; a hand-written [`defmt::Format`]
-/// (below) keeps it loggable without leaning on a heapless feature.
+/// Per-cell presentation state for the performance [`crate::ui::PageGrid`].
+/// Derived by the router (`app::Router::cell_state`) from the live toggle /
+/// group / cycle / momentary state, mirroring the LED feedback precedence
+/// (cycle > group > toggle). Purely presentational — carried in
+/// [`DisplayCmd::Page`].
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CellState {
+    /// Unbound slot — drawn blank.
+    Empty,
+    /// Bound, no latching state (Program Change / SysEx / HID / page nav) —
+    /// drawn lit, no state glyph. A transient press flashes the cell (see
+    /// [`DisplayCmd::Flash`]).
+    Plain,
+    /// CC toggle: on (lit) / off (dim).
+    Toggle(bool),
+    /// Radio/select-group member: selected (lit) / unselected (dim).
+    Radio(bool),
+    /// Multi-state cycle position. `pos` is 1-based (`0` = not yet pressed);
+    /// `len` is the cycle length. Drawn lit when `pos > 1` (off the base state).
+    Cycle { pos: u8, len: u8 },
+    /// Momentary CC: held (lit) / idle (dim).
+    Momentary(bool),
+}
+
+/// One footswitch's cell in the performance page-grid snapshot: its label and
+/// colour (from the active page) plus the live [`CellState`]. The label is an
+/// owned [`crate::config::Label`] (runtime config), so this is `Clone`, not
+/// `Copy` — like [`DisplayCmd`] itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Cell {
+    pub label: crate::config::Label,
+    pub color: LedColor,
+    pub state: CellState,
+}
+
+/// A render request to the display task. It is an **in-process** channel
+/// message (router → display task) — `Clone` because the [`Self::Page`] snapshot
+/// owns its strings (runtime [`crate::config::RuntimeConfig`] data, not
+/// `'static`). Unlike the wire/flash config it is never serialized, so the only
+/// contract is the exhaustive `match` in `bin/midicaptain.rs::display_task`;
+/// change it on both ends (no `proto::PROTO_VERSION` bump). The hand-written
+/// [`defmt::Format`] (below) keeps it loggable without a heapless `defmt`
+/// feature.
+//
+// `Page` carries the whole page snapshot (~263 B: ten owned [`Cell`]s) while the
+// other variants are tiny — a large variant spread. With no allocator (`no_std`)
+// there is nothing to box into, and the snapshot must move by value through the
+// display channel (depth-bounded, so only a handful live in `.bss` at once), so
+// the spread is intrinsic — exactly like [`crate::app::ConfigReq`].
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum DisplayCmd {
-    /// The active page changed (or initial paint): show its name and
-    /// 1-based position (`index` of `total`).
+    /// Full performance-screen snapshot — sent on the initial paint, on every
+    /// page change, and after any state change (toggle / group / cycle /
+    /// momentary / inbound-CC sync). Carries the page `name`, 1-based position
+    /// (`index` of `total`), the current program (for the header), and one
+    /// [`Cell`] per footswitch. The [`crate::ui::PageGrid`] widget diffs this
+    /// against what it last drew and repaints only the cells that changed.
     Page {
         name: crate::config::PageName,
         index: u8,
         total: u8,
+        program: u8,
+        cells: [Cell; crate::config::PAGE_BUTTONS],
     },
-    /// A button was actuated: briefly show its label, plus on/off when the
-    /// button is a toggle (`toggle = false` hides the state suffix).
-    Action {
-        label: crate::config::Label,
-        toggle: bool,
-        on: bool,
+    /// Briefly highlight one cell (scan `index`) — transient feedback for a
+    /// non-latching press (Program Change / SysEx / HID / page-step) that has no
+    /// persistent [`CellState`] to show. The display task draws the pressed
+    /// style, then restores the cell after a short timeout.
+    Flash {
+        index: u8,
     },
     /// Settings-menu item view (single item at a time): its `title`, current
     /// `value` rendered per `kind`, and whether it's being edited.
@@ -159,12 +209,10 @@ pub enum DisplayCmd {
 impl defmt::Format for DisplayCmd {
     fn format(&self, f: defmt::Formatter) {
         match self {
-            DisplayCmd::Page { name, index, total } => {
-                defmt::write!(f, "Page({=str} {}/{})", name.as_str(), index, total)
+            DisplayCmd::Page { name, index, total, program, .. } => {
+                defmt::write!(f, "Page({=str} {}/{} pc={})", name.as_str(), index, total, program)
             }
-            DisplayCmd::Action { label, toggle, on } => {
-                defmt::write!(f, "Action({=str} toggle={} on={})", label.as_str(), toggle, on)
-            }
+            DisplayCmd::Flash { index } => defmt::write!(f, "Flash(#{})", index),
             DisplayCmd::Menu {
                 title,
                 value,
