@@ -49,6 +49,7 @@ use heapless::String;
 use static_cell::StaticCell;
 
 use midicaptain_firmware::app::{self, Router};
+use midicaptain_firmware::config;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
 use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
@@ -83,6 +84,9 @@ static MIDI_RX: mux::MidiRxChannel = mux::MidiRxChannel::new();
 static MIDI_CMD: mux::MidiCmdChannel = mux::MidiCmdChannel::new();
 static SYSEX_IN: mux::SysExChannel = mux::SysExChannel::new();
 static SYSEX_OUT: mux::SysExChannel = mux::SysExChannel::new();
+// Config-sync request/response between the CDC task and the router.
+static CONFIG_REQ_CH: app::ConfigReqChannel = app::ConfigReqChannel::new();
+static CONFIG_RESP_CH: app::ConfigRespChannel = app::ConfigRespChannel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -210,7 +214,9 @@ async fn main(spawner: Spawner) {
     };
     let usb = builder.build();
     spawner.spawn(usb_task(usb).unwrap());
-    spawner.spawn(cdc_task(cdc_class).unwrap());
+    spawner.spawn(
+        cdc_task(cdc_class, CONFIG_REQ_CH.sender(), CONFIG_RESP_CH.receiver()).unwrap(),
+    );
 
     static TX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 64]> = StaticCell::new();
@@ -235,12 +241,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(buttons::buttons_task(footswitches, BUTTON_CH.sender()).unwrap());
 
     // ── User config: load from flash (falls back to the baked default on a
-    // blank/corrupt device). The one-shot scratch buffer is too large to keep
-    // inside `Storage` for the program's lifetime, so it lives here. ────────
+    // blank/corrupt device). The scratch buffer is too large to keep inside
+    // `Storage` for the program's lifetime, so it lives here — and is then
+    // handed to the router, which reuses it to persist configs pushed over USB
+    // (a second 8 KB array would be wasteful). ──────────────────────────────
     static CONFIG_SCRATCH: StaticCell<[u8; storage::CONFIG_SCRATCH_LEN]> = StaticCell::new();
-    let config = storage
-        .load_config(CONFIG_SCRATCH.init([0; storage::CONFIG_SCRATCH_LEN]))
-        .await;
+    let config_scratch = CONFIG_SCRATCH.init([0; storage::CONFIG_SCRATCH_LEN]);
+    let config = storage.load_config(&mut config_scratch[..]).await;
     info!("config: {} page(s)", config.page_count());
 
     // ── Router (last: it depends on settings + config loaded above, and
@@ -249,6 +256,7 @@ async fn main(spawner: Spawner) {
         config,
         settings,
         storage,
+        config_scratch,
         DISPLAY_CH.sender(),
         LED_CH.sender(),
         MIDI_CMD.sender(),
@@ -261,6 +269,8 @@ async fn main(spawner: Spawner) {
             ENC_CH.receiver(),
             EXPR_CH.receiver(),
             MIDI_RX.receiver(),
+            CONFIG_REQ_CH.receiver(),
+            CONFIG_RESP_CH.sender(),
         )
         .unwrap(),
     );
@@ -298,20 +308,29 @@ async fn out_task(usb_tx: UsbMidiTx<'static, UsbDriver>, din_tx: BufferedUartTx)
 }
 
 // ── USB-CDC config-sync endpoint ────────────────────────────────────────
-// Phase B-2a: brings the CDC link up and proves the framing end-to-end with
-// HELLO. The config GET/SET handling + the router config channel are B-2b.
+// Serves the config-sync protocol over CDC: HELLO (link probe), GET_CONFIG
+// (read the live config), SET_CONFIG (validate → persist → hot-reload). The
+// wire codec is `proto`; the live config and flash live in the router, reached
+// over the `config_req`/`config_resp` channels (this task is the sole client,
+// so it sends a request then awaits exactly one reply before reading on).
 
 /// Owns the CDC-ACM endpoints. Reassembles COBS frames (host bytes delimited
-/// by `0x00`), decodes each via [`proto`], and replies. Answers `HELLO` with
-/// the protocol version; rejects any other opcode with `ERROR(BadCommand)`.
+/// by `0x00`), decodes each via [`proto`], and replies — routing GET/SET to the
+/// router over the config channels.
 #[embassy_executor::task]
-async fn cdc_task(mut cdc: CdcAcmClass<'static, UsbDriver>) -> ! {
+async fn cdc_task(
+    mut cdc: CdcAcmClass<'static, UsbDriver>,
+    config_req: app::ConfigReqSender,
+    config_resp: app::ConfigRespReceiver,
+) -> ! {
     static ACC: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
     static BODY: StaticCell<[u8; proto::MAX_BODY]> = StaticCell::new();
     static OUT: StaticCell<[u8; proto::MAX_FRAME_LEN]> = StaticCell::new();
+    static PAYLOAD: StaticCell<[u8; proto::MAX_PAYLOAD]> = StaticCell::new();
     let acc = ACC.init([0; proto::MAX_FRAME_LEN]);
     let body = BODY.init([0; proto::MAX_BODY]);
     let out = OUT.init([0; proto::MAX_FRAME_LEN]);
+    let payload = PAYLOAD.init([0; proto::MAX_PAYLOAD]);
     let mut pkt = [0u8; 64];
 
     loop {
@@ -325,7 +344,16 @@ async fn cdc_task(mut cdc: CdcAcmClass<'static, UsbDriver>) -> ! {
             };
             for &b in &pkt[..n] {
                 if b == 0 {
-                    handle_cdc_frame(&acc[..acc_len], &mut cdc, body, out).await;
+                    handle_cdc_frame(
+                        &acc[..acc_len],
+                        &mut cdc,
+                        &config_req,
+                        &config_resp,
+                        body,
+                        payload,
+                        out,
+                    )
+                    .await;
                     acc_len = 0;
                 } else if acc_len < acc.len() {
                     acc[acc_len] = b;
@@ -338,41 +366,123 @@ async fn cdc_task(mut cdc: CdcAcmClass<'static, UsbDriver>) -> ! {
     }
 }
 
-/// Decode one frame and reply. `body` is scratch for both the decode and the
-/// reply encode — used sequentially (the decoded `cmd`/`seq` are copied out
-/// before `body` is reused for the reply).
+/// A decoded, owned request — detached from the `body` decode buffer so that
+/// buffer is free to reassemble the reply.
+// `Set` owns a whole `RuntimeConfig` (~2.4 KB); the other variants are tiny.
+// It's a short-lived stack local (one per frame), and `no_std` has no allocator
+// to box into, so the spread is intrinsic and harmless here.
+#[allow(clippy::large_enum_variant)]
+enum Incoming {
+    /// Link probe → reply with the protocol version.
+    Hello,
+    /// Read the live config from the router.
+    Get,
+    /// Replace the live config (already deserialized + checked non-empty).
+    Set(config::RuntimeConfig),
+    /// Reject with this code: bad opcode, or an un-parseable/empty config.
+    Bad(proto::ProtoError),
+}
+
+/// Decode one frame, act on it, and reply. `body` is the COBS decode scratch
+/// (reused to assemble the reply once the request is an owned [`Incoming`]);
+/// `payload` serializes the GET-config blob; `out` holds the encoded reply.
 async fn handle_cdc_frame(
     frame: &[u8],
     cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    config_req: &app::ConfigReqSender,
+    config_resp: &app::ConfigRespReceiver,
     body: &mut [u8],
+    payload: &mut [u8],
     out: &mut [u8],
 ) {
     if frame.is_empty() {
         return;
     }
-    let (cmd, seq) = match proto::decode(frame, body) {
-        Ok(f) => (f.cmd, f.seq),
-        Err(e) => {
-            warn!("cdc: bad frame ({})", e);
-            return; // no seq to echo → drop silently
-        }
+    // Decode the frame; for SET, deserialize + validate the config now — while
+    // `body` still holds the decoded payload — into an owned `Incoming`, so
+    // `body` is free to reuse for the reply once the borrow ends.
+    let (seq, incoming) = {
+        let f = match proto::decode(frame, body) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("cdc: bad frame ({})", e);
+                return; // no seq to echo → drop silently
+            }
+        };
+        let inc = match f.cmd {
+            proto::cmd::HELLO => Incoming::Hello,
+            proto::cmd::GET_CONFIG => Incoming::Get,
+            proto::cmd::SET_CONFIG => match config::deserialize(f.payload) {
+                Ok(cfg) if cfg.page_count() > 0 => Incoming::Set(cfg),
+                _ => Incoming::Bad(proto::ProtoError::BadPayload),
+            },
+            other => {
+                warn!("cdc: unhandled cmd {=u8}", other);
+                Incoming::Bad(proto::ProtoError::BadCommand)
+            }
+        };
+        (f.seq, inc)
     };
-    let mut payload = [0u8; 1];
-    let (reply_cmd, plen) = match cmd {
-        proto::cmd::HELLO => {
-            payload[0] = proto::PROTO_VERSION;
-            (proto::cmd::HELLO, 1)
+
+    match incoming {
+        Incoming::Hello => {
+            reply(cdc, proto::cmd::HELLO, seq, &[proto::PROTO_VERSION], body, out).await;
         }
-        other => {
-            warn!("cdc: unhandled cmd {=u8}", other);
-            payload[0] = proto::ProtoError::BadCommand as u8;
-            (proto::cmd::ERROR, 1)
+        Incoming::Get => {
+            config_req.send(app::ConfigReq::Get).await;
+            match config_resp.receive().await {
+                app::ConfigResp::Config(cfg) => match config::serialize(&cfg, payload) {
+                    Ok(blob) => reply(cdc, proto::cmd::GET_CONFIG, seq, blob, body, out).await,
+                    Err(e) => {
+                        warn!("cdc: config serialize failed ({})", e);
+                        error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await;
+                    }
+                },
+                // The router only ever answers Get with Config; anything else
+                // is an internal error — relay it rather than panic.
+                _ => error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await,
+            }
         }
-    };
-    match proto::encode(reply_cmd, seq, &payload[..plen], body, out) {
+        Incoming::Set(cfg) => {
+            config_req.send(app::ConfigReq::Set(cfg)).await;
+            match config_resp.receive().await {
+                app::ConfigResp::Ok => {
+                    reply(cdc, proto::cmd::SET_CONFIG, seq, &[], body, out).await
+                }
+                app::ConfigResp::Err(e) => error_reply(cdc, seq, e, body, out).await,
+                app::ConfigResp::Config(_) => {
+                    error_reply(cdc, seq, proto::ProtoError::StoreFailed, body, out).await
+                }
+            }
+        }
+        Incoming::Bad(e) => error_reply(cdc, seq, e, body, out).await,
+    }
+}
+
+/// Encode `(cmd, seq, payload)` into `out` (scratch `body`) and write the frame.
+async fn reply(
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    cmd: u8,
+    seq: u8,
+    payload: &[u8],
+    body: &mut [u8],
+    out: &mut [u8],
+) {
+    match proto::encode(cmd, seq, payload, body, out) {
         Ok(n) => write_cdc_frame(cdc, &out[..n]).await,
         Err(e) => warn!("cdc: encode failed ({})", e),
     }
+}
+
+/// Reply with `ERROR(code)`, echoing the request `seq`.
+async fn error_reply(
+    cdc: &mut CdcAcmClass<'static, UsbDriver>,
+    seq: u8,
+    code: proto::ProtoError,
+    body: &mut [u8],
+    out: &mut [u8],
+) {
+    reply(cdc, proto::cmd::ERROR, seq, &[code as u8], body, out).await;
 }
 
 /// Write a full frame to the host, chunked to the CDC max packet size. The
