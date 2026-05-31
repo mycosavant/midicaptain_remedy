@@ -21,7 +21,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Instant};
 
-use crate::config::{self, Action, CcValue, Config, SysexCmd};
+use crate::config::{self, Action, CcValue, RuntimeConfig, SysexCmd};
 use crate::events::{
     ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd, MidiRx,
 };
@@ -67,7 +67,7 @@ enum Mode {
 
 /// The event router + application state.
 pub struct Router {
-    config: Config,
+    config: RuntimeConfig,
     page: usize,
     /// Live, editable settings (the menu mutates these; persisted on exit).
     settings: Settings,
@@ -94,7 +94,7 @@ impl Router {
     /// Build a router bound to its output channels, the loaded settings, and
     /// the flash store (for menu persistence).
     pub fn new(
-        config: Config,
+        config: RuntimeConfig,
         settings: Settings,
         storage: Storage,
         display: DisplaySender,
@@ -125,7 +125,7 @@ impl Router {
         self.settings.midi_channel.saturating_sub(1) & 0x0F
     }
 
-    fn current_page(&self) -> &'static config::Page {
+    fn current_page(&self) -> &config::OwnedPage {
         self.config.page(self.page)
     }
 
@@ -161,7 +161,7 @@ impl Router {
     fn refresh_page(&self) {
         let page = self.current_page();
         let _ = self.display.try_send(DisplayCmd::Page {
-            name: page.name,
+            name: page.name.clone(),
             index: self.page as u8 + 1,
             total: self.config.page_count() as u8,
         });
@@ -170,7 +170,7 @@ impl Router {
 
     /// Switch pages, clearing per-page toggle state (CLAUDE.md) and repainting.
     fn change_page(&mut self, page: usize) {
-        self.page = page.min(self.config.page_count() - 1);
+        self.page = page.min(self.config.page_count().saturating_sub(1));
         self.toggles = [false; 128];
         self.refresh_page();
     }
@@ -206,16 +206,22 @@ impl Router {
             .take()
             .map(|t| Instant::now().saturating_duration_since(t) >= LONG_PRESS)
             .unwrap_or(false);
-        let btn = self.current_page().buttons[idx];
-        let action = if long && btn.on_long_press != Action::None {
-            btn.on_long_press
-        } else {
-            btn.on_press
+        // Pick the action and clone the label out of the (immutably-borrowed)
+        // config *before* `dispatch` takes `&mut self` — the owned label means
+        // no config borrow is held across the mutable call.
+        let (action, label) = {
+            let btn = &self.current_page().buttons[idx];
+            let action = if long && btn.on_long_press != Action::None {
+                btn.on_long_press
+            } else {
+                btn.on_press
+            };
+            (action, btn.label.clone())
         };
-        self.dispatch(action, btn.label);
+        self.dispatch(action, label);
     }
 
-    fn dispatch(&mut self, action: Action, label: &'static str) {
+    fn dispatch(&mut self, action: Action, label: config::Label) {
         let channel = self.wire_channel();
         match action {
             Action::None => {}
@@ -260,7 +266,7 @@ impl Router {
     }
 
     /// Show a non-toggle action's label on the display.
-    fn announce(&self, label: &'static str) {
+    fn announce(&self, label: config::Label) {
         let _ = self.display.try_send(DisplayCmd::Action {
             label,
             toggle: false,
