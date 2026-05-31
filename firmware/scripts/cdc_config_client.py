@@ -39,13 +39,15 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 1
+PROTO_VERSION = 2  # v2: RuntimeConfig gained the midi_thru field (see proto.rs)
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
 ERR_NAMES = {1: "BadCommand", 2: "BadPayload", 3: "StoreFailed"}
 
 PAGE_BUTTONS = 10  # config::PAGE_BUTTONS — every page has exactly this many
+# config::ThruRoutes fields, in serialized (declaration) order.
+THRU_FIELDS = ("usb_to_din", "din_to_usb", "din_to_din", "usb_to_usb")
 
 
 # ── wire codec (mirror of src/proto.rs) ─────────────────────────────────────
@@ -245,9 +247,11 @@ def decode_config(blob: bytes) -> dict:
                 "on_long_press": _dec_action(r),
             })
         pages.append({"name": name, "buttons": buttons})
+    # ThruRoutes: 4 bools, appended after pages (RuntimeConfig field order).
+    midi_thru = {field: bool(r.u8()) for field in THRU_FIELDS}
     if r.i != len(blob):
         raise ValueError(f"trailing bytes ({len(blob) - r.i}) after decode")
-    return {"pages": pages}
+    return {"pages": pages, "midi_thru": midi_thru}
 
 
 def encode_config(cfg: dict) -> bytes:
@@ -268,6 +272,10 @@ def encode_config(cfg: dict) -> bytes:
             out += bytes(b["color"])
             out += _enc_action(b["on_press"])
             out += _enc_action(b["on_long_press"])
+    # ThruRoutes: 4 bools after pages. Tolerate older configs missing the field.
+    thru = cfg.get("midi_thru", {})
+    for field in THRU_FIELDS:
+        out.append(1 if thru.get(field) else 0)
     return bytes(out)
 
 
@@ -322,6 +330,9 @@ def _print_config(cfg: dict) -> None:
             extra = "" if b["on_long_press"]["type"] == "none" \
                 else f"  long={b['on_long_press']}"
             print(f"    [{j}] {b['label']!r:>8}  rgb{tuple(b['color'])}  {act}{extra}")
+    thru = cfg.get("midi_thru", {})
+    on = [f for f in THRU_FIELDS if thru.get(f)]
+    print(f"  midi_thru: {', '.join(on) if on else 'none'}")
 
 
 def cmd_hello(ser, _args) -> None:

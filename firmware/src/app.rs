@@ -586,6 +586,13 @@ impl Router {
         }
     }
 
+    /// Publish the config's MIDI-thru routes to the transport layer (`mux`),
+    /// which forwards inbound MIDI per them. Called at startup and on every
+    /// config apply.
+    fn sync_thru(&self) {
+        mux::set_thru(self.config.midi_thru);
+    }
+
     // ── config sync (webapp ↔ device over CDC) ─────────────────────────
     /// Service a config-sync request from the CDC task.
     ///
@@ -613,6 +620,7 @@ impl Router {
                     return ConfigResp::Err(proto::ProtoError::StoreFailed);
                 }
                 self.config = cfg;
+                self.sync_thru();
                 self.mode = Mode::Performance;
                 self.page = 0;
                 self.toggles = [false; 128];
@@ -661,6 +669,7 @@ pub async fn router_task(
     config_resp: ConfigRespSender,
 ) {
     r.refresh_page(); // initial paint
+    r.sync_thru(); // publish the config's MIDI-thru routes to the mux
     loop {
         match select(
             select4(

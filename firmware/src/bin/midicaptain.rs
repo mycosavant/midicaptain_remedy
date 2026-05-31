@@ -87,6 +87,8 @@ static SYSEX_OUT: mux::SysExChannel = mux::SysExChannel::new();
 // Config-sync request/response between the CDC task and the router.
 static CONFIG_REQ_CH: app::ConfigReqChannel = app::ConfigReqChannel::new();
 static CONFIG_RESP_CH: app::ConfigRespChannel = app::ConfigRespChannel::new();
+// MIDI-thru forwards from the input loops to the output loop (one transport each).
+static THRU_CH: mux::ThruChannel = mux::ThruChannel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -294,17 +296,17 @@ async fn usb_task(mut device: embassy_usb::UsbDevice<'static, UsbDriver>) -> ! {
 
 #[embassy_executor::task]
 async fn usb_in_task(usb_rx: UsbMidiRx<'static, UsbDriver>) -> ! {
-    mux::usb_in_loop(usb_rx, &MIDI_RX, &SYSEX_IN).await
+    mux::usb_in_loop(usb_rx, &MIDI_RX, &SYSEX_IN, THRU_CH.sender()).await
 }
 
 #[embassy_executor::task]
 async fn din_in_task(din_rx: BufferedUartRx) -> ! {
-    mux::din_in_loop(din_rx, &MIDI_RX, &SYSEX_IN).await
+    mux::din_in_loop(din_rx, &MIDI_RX, &SYSEX_IN, THRU_CH.sender()).await
 }
 
 #[embassy_executor::task]
 async fn out_task(usb_tx: UsbMidiTx<'static, UsbDriver>, din_tx: BufferedUartTx) -> ! {
-    mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT).await
+    mux::out_loop(usb_tx, din_tx, &MIDI_CMD, &SYSEX_OUT, THRU_CH.receiver()).await
 }
 
 // ── USB-CDC config-sync endpoint ────────────────────────────────────────
@@ -485,14 +487,26 @@ async fn error_reply(
     reply(cdc, proto::cmd::ERROR, seq, &[code as u8], body, out).await;
 }
 
+/// CDC-ACM bulk max packet size — matches `CdcAcmClass::new(.., 64)` above.
+const CDC_MAX_PACKET: usize = 64;
+
 /// Write a full frame to the host, chunked to the CDC max packet size. The
 /// trailing `0x00` delimiter is part of `frame`, so the host parses by
 /// delimiter regardless of packetisation.
 async fn write_cdc_frame(cdc: &mut CdcAcmClass<'static, UsbDriver>, frame: &[u8]) {
-    for chunk in frame.chunks(64) {
+    for chunk in frame.chunks(CDC_MAX_PACKET) {
         if cdc.write_packet(chunk).await.is_err() {
             return; // disconnected mid-write
         }
+    }
+    // USB marks end-of-transfer with a *short* packet. When the frame length is
+    // an exact multiple of the max packet size, the final data packet is full,
+    // so the host keeps waiting for more and never delivers the buffered bytes
+    // (it hung the GET reply once `midi_thru` nudged the blob to a 64-multiple).
+    // A frame always ends in the 0x00 delimiter, so it is never empty; emit a
+    // zero-length packet to terminate the transfer.
+    if frame.len().is_multiple_of(CDC_MAX_PACKET) {
+        let _ = cdc.write_packet(&[]).await;
     }
 }
 

@@ -26,7 +26,11 @@
 //! [Consistent Overhead Byte Stuffing]: https://en.wikipedia.org/wiki/Consistent_Overhead_Byte_Stuffing
 
 /// Protocol version, sent in `HELLO`. Bump on any breaking wire change.
-pub const PROTO_VERSION: u8 = 1;
+///
+/// v2: `config::RuntimeConfig` gained the `midi_thru` field (appended after
+/// `pages`), so a v1 config blob no longer round-trips — a breaking change to
+/// the GET/SET payload format.
+pub const PROTO_VERSION: u8 = 2;
 
 /// Largest config payload we carry (the postcard `RuntimeConfig` blob ceiling;
 /// see `config::MAX_PAGES`). Buffers are sized from this.

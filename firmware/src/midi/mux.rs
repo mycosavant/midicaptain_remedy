@@ -21,8 +21,11 @@
 //! encode. Callers that think in 1-based MIDI channels convert at their
 //! edge — the mux stays a pure wire codec.
 
-use embassy_futures::select::{select, Either};
+use core::cell::Cell;
+
+use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::Channel;
 use embassy_usb::class::midi::{Receiver, Sender};
 use embassy_usb::driver::{Driver, EndpointError};
@@ -30,6 +33,7 @@ use embedded_io_async::{Read, Write};
 use heapless::Vec;
 
 use super::sysex::{self, SysEx, SysExBuf, MAX_SYSEX};
+use crate::config;
 use crate::events::{MidiCmd, MidiRx};
 
 /// Depth of the inbound channel-voice channel. Drop-newest on overflow.
@@ -55,6 +59,73 @@ pub type MidiRxReceiver = embassy_sync::channel::Receiver<'static, CriticalSecti
 pub type MidiCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, MidiCmd, CMD_DEPTH>;
 /// Sender the router pushes outbound SysEx to (drained by [`out_loop`]).
 pub type SysExSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, SysEx, SYSEX_DEPTH>;
+
+// ── MIDI-thru routing ────────────────────────────────────────────────────
+// The thru matrix forwards inbound channel-voice messages to a *specific*
+// outbound transport, gated by [`config::ThruRoutes`]. The input loops read the
+// live routes from a shared `static` (published by the router on config load /
+// apply, mirroring `hal::expression::LIVE_CAL`) and, when a route is enabled,
+// hand the message to [`out_loop`] tagged with its destination — the only path
+// that writes one transport instead of fanning to both.
+//
+// Scope: channel-voice messages (Note / CC / PC / Pitch Bend — everything
+// [`MidiRx`] represents). SysEx pass-through is not forwarded yet.
+
+/// Which transport a thru-forwarded message goes out on.
+#[derive(Clone, Copy)]
+pub enum ThruDest {
+    Usb,
+    Din,
+}
+
+/// A thru-forwarded inbound message plus its destination transport.
+#[derive(Clone, Copy)]
+pub struct ThruMsg {
+    pub dest: ThruDest,
+    pub msg: MidiRx,
+}
+
+/// Depth of the thru channel (input loops → [`out_loop`]). Drop-newest on overflow.
+pub const THRU_DEPTH: usize = 16;
+/// Channel carrying thru-forwarded messages to [`out_loop`].
+pub type ThruChannel = Channel<CriticalSectionRawMutex, ThruMsg, THRU_DEPTH>;
+/// Sender half — held by the input loops.
+pub type ThruSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, ThruMsg, THRU_DEPTH>;
+/// Receiver half — held by [`out_loop`].
+pub type ThruReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, ThruMsg, THRU_DEPTH>;
+
+/// Live MIDI-thru routes, shared between the router (writer, via [`set_thru`])
+/// and the input loops (readers, via [`thru_routes`]).
+static THRU: BlockingMutex<CriticalSectionRawMutex, Cell<config::ThruRoutes>> =
+    BlockingMutex::new(Cell::new(config::ThruRoutes::NONE));
+
+/// Publish the active thru routes — called by the router on config load/apply.
+pub fn set_thru(routes: config::ThruRoutes) {
+    THRU.lock(|c| c.set(routes));
+}
+
+/// Read the active thru routes.
+fn thru_routes() -> config::ThruRoutes {
+    THRU.lock(|c| c.get())
+}
+
+/// Forward an inbound message per the live routes. `from_usb` picks which route
+/// pair applies (USB-in vs DIN-in). A message can fan to both transports (e.g.
+/// DIN-in with both `din_to_usb` and `din_to_din` set).
+fn forward_thru(m: MidiRx, from_usb: bool, thru: &ThruSender) {
+    let r = thru_routes();
+    let (to_usb, to_din) = if from_usb {
+        (r.usb_to_usb, r.usb_to_din)
+    } else {
+        (r.din_to_usb, r.din_to_din)
+    };
+    if to_usb {
+        let _ = thru.try_send(ThruMsg { dest: ThruDest::Usb, msg: m });
+    }
+    if to_din {
+        let _ = thru.try_send(ThruMsg { dest: ThruDest::Din, msg: m });
+    }
+}
 
 /// Worst-case USB packet count for one [`MAX_SYSEX`]-byte SysEx:
 /// `ceil(MAX_SYSEX / 3)` (three SysEx bytes per packet).
@@ -162,6 +233,60 @@ pub fn encode_din(cmd: &MidiCmd) -> Vec<u8, 3> {
             let _ = v.push(status);
             let _ = v.push(note & 0x7F);
             let _ = v.push(velocity & 0x7F);
+        }
+    }
+    v
+}
+
+/// Encode a [`MidiRx`] as a single USB-MIDI event packet on `cable` — the
+/// thru-forwarding counterpart to [`encode_usb`], which additionally covers
+/// pitch bend (present in [`MidiRx`] but not [`MidiCmd`]).
+fn encode_usb_rx(m: &MidiRx, cable: u8) -> [u8; 4] {
+    let cab = (cable & 0x0F) << 4;
+    match *m {
+        MidiRx::ControlChange { channel, cc, value } => {
+            [cab | 0x0B, 0xB0 | (channel & 0x0F), cc & 0x7F, value & 0x7F]
+        }
+        MidiRx::ProgramChange { channel, program } => {
+            [cab | 0x0C, 0xC0 | (channel & 0x0F), program & 0x7F, 0]
+        }
+        MidiRx::Note { channel, note, velocity, on } => {
+            let (status_hi, cin) = if on { (0x90, 0x09) } else { (0x80, 0x08) };
+            [cab | cin, status_hi | (channel & 0x0F), note & 0x7F, velocity & 0x7F]
+        }
+        MidiRx::PitchBend { channel, value } => [
+            cab | 0x0E,
+            0xE0 | (channel & 0x0F),
+            (value & 0x7F) as u8,
+            ((value >> 7) & 0x7F) as u8,
+        ],
+    }
+}
+
+/// Encode a [`MidiRx`] as raw DIN MIDI bytes — the thru-forwarding counterpart
+/// to [`encode_din`].
+fn encode_din_rx(m: &MidiRx) -> Vec<u8, 3> {
+    let mut v = Vec::new();
+    match *m {
+        MidiRx::ControlChange { channel, cc, value } => {
+            let _ = v.push(0xB0 | (channel & 0x0F));
+            let _ = v.push(cc & 0x7F);
+            let _ = v.push(value & 0x7F);
+        }
+        MidiRx::ProgramChange { channel, program } => {
+            let _ = v.push(0xC0 | (channel & 0x0F));
+            let _ = v.push(program & 0x7F);
+        }
+        MidiRx::Note { channel, note, velocity, on } => {
+            let status = (if on { 0x90u8 } else { 0x80u8 }) | (channel & 0x0F);
+            let _ = v.push(status);
+            let _ = v.push(note & 0x7F);
+            let _ = v.push(velocity & 0x7F);
+        }
+        MidiRx::PitchBend { channel, value } => {
+            let _ = v.push(0xE0 | (channel & 0x0F));
+            let _ = v.push((value & 0x7F) as u8);
+            let _ = v.push(((value >> 7) & 0x7F) as u8);
         }
     }
     v
@@ -293,11 +418,13 @@ fn emit_sysex(ch: &'static SysExChannel, msg: &[u8]) {
 }
 
 /// USB-MIDI input loop: channel-voice → `rx_ch`, reassembled SysEx →
-/// `sysex_in`. Owns the USB-MIDI receiver; never returns.
+/// `sysex_in`, and (per the live thru routes) forwarded to `thru`. Owns the
+/// USB-MIDI receiver; never returns.
 pub async fn usb_in_loop<'d, D: Driver<'d>>(
     mut usb_rx: Receiver<'d, D>,
     rx_ch: &'static MidiRxChannel,
     sysex_in: &'static SysExChannel,
+    thru: ThruSender,
 ) -> ! {
     let mut buf = [0u8; 64];
     let mut reasm = SysExBuf::new();
@@ -318,6 +445,7 @@ pub async fn usb_in_loop<'d, D: Driver<'d>>(
                             0x8..=0xE => {
                                 if let Some(rx) = decode_usb_channel(&packet) {
                                     let _ = rx_ch.try_send(rx);
+                                    forward_thru(rx, true, &thru);
                                 }
                             }
                             _ => {}
@@ -334,12 +462,13 @@ pub async fn usb_in_loop<'d, D: Driver<'d>>(
     }
 }
 
-/// DIN input loop: parse the raw UART byte stream into `rx_ch` and
-/// `sysex_in`. Owns the UART receiver; never returns.
+/// DIN input loop: parse the raw UART byte stream into `rx_ch`, `sysex_in`, and
+/// (per the live thru routes) `thru`. Owns the UART receiver; never returns.
 pub async fn din_in_loop<R: Read>(
     mut rx: R,
     rx_ch: &'static MidiRxChannel,
     sysex_in: &'static SysExChannel,
+    thru: ThruSender,
 ) -> ! {
     let mut parser = DinParser::new();
     let mut buf = [0u8; 32];
@@ -351,6 +480,7 @@ pub async fn din_in_loop<R: Read>(
                 match parser.feed(b) {
                     Some(DinOut::Rx(m)) => {
                         let _ = rx_ch.try_send(m);
+                        forward_thru(m, false, &thru);
                     }
                     Some(DinOut::SysEx(msg)) => emit_sysex(sysex_in, msg),
                     None => {}
@@ -360,24 +490,27 @@ pub async fn din_in_loop<R: Read>(
     }
 }
 
-/// Output loop: drain `cmd_ch` (channel-voice) and `sysex_out`, fanning
-/// each message to **both** transports. Owns the USB-MIDI sender and the
-/// UART transmitter; never returns.
+/// Output loop. Drains three sources: `cmd_ch` (channel-voice) and `sysex_out`
+/// — both the router's own output, fanned to **both** transports — and `thru`,
+/// MIDI-thru forwards that go to a **single** transport (USB *or* DIN) per
+/// [`ThruMsg::dest`]. Owns the USB-MIDI sender and the UART transmitter; never
+/// returns.
 pub async fn out_loop<'d, D: Driver<'d>, W: Write>(
     mut usb_tx: Sender<'d, D>,
     mut din_tx: W,
     cmd_ch: &'static MidiCmdChannel,
     sysex_out: &'static SysExChannel,
+    thru: ThruReceiver,
 ) -> ! {
     loop {
-        match select(cmd_ch.receive(), sysex_out.receive()).await {
-            Either::First(cmd) => {
+        match select3(cmd_ch.receive(), sysex_out.receive(), thru.receive()).await {
+            Either3::First(cmd) => {
                 let pkt = encode_usb(&cmd, 0);
                 let _ = usb_tx.write_packet(&pkt).await;
                 let din = encode_din(&cmd);
                 let _ = din_tx.write_all(din.as_slice()).await;
             }
-            Either::Second(sx) => {
+            Either3::Second(sx) => {
                 let mut packets: Vec<[u8; 4], USB_PACKETS_MAX> = Vec::new();
                 if sysex::to_usb_packets(&sx, 0, &mut packets).is_ok() {
                     for p in &packets {
@@ -386,6 +519,16 @@ pub async fn out_loop<'d, D: Driver<'d>, W: Write>(
                 }
                 let _ = din_tx.write_all(sx.as_slice()).await;
             }
+            // A thru forward targets exactly one transport (the directional
+            // route), unlike the router's output which fans to both.
+            Either3::Third(t) => match t.dest {
+                ThruDest::Usb => {
+                    let _ = usb_tx.write_packet(&encode_usb_rx(&t.msg, 0)).await;
+                }
+                ThruDest::Din => {
+                    let _ = din_tx.write_all(encode_din_rx(&t.msg).as_slice()).await;
+                }
+            },
         }
     }
 }
