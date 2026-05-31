@@ -55,6 +55,7 @@
 
 use core::ops::Range;
 
+use crate::config::{self, RuntimeConfig};
 use embassy_rp::Peri;
 use embassy_rp::flash::{Blocking, Flash};
 use embassy_rp::peripherals::FLASH;
@@ -91,7 +92,17 @@ mod key {
     pub const LED_BRIGHTNESS: u8 = 0x03;
     /// Packed `min:max` calibration, indexed by pedal (`0` or `1`).
     pub const PEDAL_CAL: [u8; 2] = [0x10, 0x11];
+    /// Serialized user [`crate::config::RuntimeConfig`] (postcard blob). A
+    /// single large value, separate from the scalar settings above.
+    pub const CONFIG: u8 = 0x20;
 }
+
+/// Recommended scratch-buffer length for [`Storage::store_config`] /
+/// [`Storage::load_config`]. The caller owns the buffer (it is too large to
+/// keep inside [`Storage`] for the program's lifetime); `store` splits it into
+/// a serialize half and a framing half, so it must be `≥ 2 ×` the largest
+/// serialized config. 8 KiB comfortably covers [`crate::config::MAX_PAGES`].
+pub const CONFIG_SCRATCH_LEN: usize = 8 * 1024;
 
 // ── Defaults ─────────────────────────────────────────────────────────────
 // Returned when a key has never been stored. These mirror the "safe" values
@@ -341,6 +352,61 @@ impl Storage {
             defmt::warn!("storage: factory reset failed");
             StorageError::Backend
         })
+    }
+
+    // ── user config blob ──────────────────────────────────────────────────
+
+    /// Persist a user [`RuntimeConfig`] as a postcard blob under one key.
+    ///
+    /// `scratch` (≥ [`CONFIG_SCRATCH_LEN`]) is split in half: the config is
+    /// serialized into the first half, and the map frames the resulting blob
+    /// through the second. Both halves must hold the blob, hence the `2×`.
+    pub async fn store_config(
+        &mut self,
+        cfg: &RuntimeConfig,
+        scratch: &mut [u8],
+    ) -> Result<(), StorageError> {
+        let (ser, frame) = scratch.split_at_mut(scratch.len() / 2);
+        let blob = config::serialize(cfg, ser).map_err(|_| {
+            defmt::warn!("storage: config serialize failed (scratch too small?)");
+            StorageError::Backend
+        })?;
+        let len = blob.len();
+        self.map
+            .store_item(frame, &key::CONFIG, &blob)
+            .await
+            .map_err(|_| {
+                defmt::warn!("storage: config write failed");
+                StorageError::Backend
+            })?;
+        defmt::info!("storage: config stored ({=usize} bytes)", len);
+        Ok(())
+    }
+
+    /// Load the user config, falling back to
+    /// [`RuntimeConfig::default_config`] when none is stored, the read fails,
+    /// or the blob is corrupt/empty. Never fails — intended for the boot path.
+    /// `scratch` must be large enough to hold the stored blob
+    /// (≥ [`CONFIG_SCRATCH_LEN`]).
+    pub async fn load_config(&mut self, scratch: &mut [u8]) -> RuntimeConfig {
+        match self.map.fetch_item::<&[u8]>(scratch, &key::CONFIG).await {
+            Ok(Some(bytes)) => match config::deserialize(bytes) {
+                Ok(cfg) if cfg.page_count() > 0 => cfg,
+                Ok(_) => {
+                    defmt::warn!("storage: stored config has no pages; using default");
+                    RuntimeConfig::default_config()
+                }
+                Err(_) => {
+                    defmt::warn!("storage: stored config corrupt; using default");
+                    RuntimeConfig::default_config()
+                }
+            },
+            Ok(None) => RuntimeConfig::default_config(),
+            Err(_) => {
+                defmt::warn!("storage: config read failed; using default");
+                RuntimeConfig::default_config()
+            }
+        }
     }
 
     // ── internals ────────────────────────────────────────────────────────

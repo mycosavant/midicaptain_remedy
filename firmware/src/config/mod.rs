@@ -46,7 +46,7 @@ pub const SWITCH_FOR_BUTTON: [Switch; PAGE_BUTTONS] = [
 
 /// CC value mode for [`Action::MidiCc`]. Mirrors the `value = <n> | "toggle"`
 /// form in the page TOML (`remedy/lib/events.py::MidiCCAction`).
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub enum CcValue {
     /// Send this fixed value (`0..=127`).
     Fixed(u8),
@@ -57,7 +57,7 @@ pub enum CcValue {
 /// A named BOSS Katana SysEx command. The config stays free of raw Roland
 /// addresses — the router builds the on-wire message via
 /// [`crate::midi::katana`], which owns those.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub enum SysexCmd {
     /// Recall a preset: `0` = Panel, `1..=4` = CH1..CH4.
     RecallPreset(u8),
@@ -71,7 +71,7 @@ pub enum SysexCmd {
 
 /// What a button does when triggered. Port of the action types in
 /// `remedy/lib/events.py::Action.from_config`.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     /// Do nothing (unbound slot).
     None,
@@ -262,4 +262,144 @@ const fn toggle(cc: u8) -> Action {
         cc,
         value: CcValue::Toggle,
     }
+}
+
+// ── Runtime (user-editable) configuration ──────────────────────────────
+//
+// The baked [`DEFAULT_CONFIG`] above is the firmware's built-in fallback. A
+// *user* config — authored in the webapp, pushed over USB, persisted in flash
+// — can't use `&'static str`, so the runtime model owns its strings (fixed-cap
+// `heapless::String`) and pages (`heapless::Vec`). It serde-derives so it can
+// round-trip through a compact `postcard` blob (see [`serialize`] /
+// [`deserialize`] and `storage::Storage::{load,store}_config`).
+//
+// Phase A (this slice): the model + its (de)serialization + flash persistence,
+// proven by `examples/config_selftest.rs`. The router still runs the baked
+// `DEFAULT_CONFIG`; swapping it to `RuntimeConfig` (and the display string-
+// lifetime change that implies) is the next slice.
+
+/// Max pages a user config can hold. Bounds the model's RAM and the serialized
+/// blob size. (The OEM SuperMode allowed 99; 8 is ample for v1 and keeps the
+/// blob well within the scratch buffer.)
+pub const MAX_PAGES: usize = 8;
+/// Max bytes of a button label.
+pub const LABEL_CAP: usize = 12;
+/// Max bytes of a page name.
+pub const NAME_CAP: usize = 16;
+
+/// An owned button label.
+pub type Label = heapless::String<LABEL_CAP>;
+/// An owned page name.
+pub type PageName = heapless::String<NAME_CAP>;
+
+/// One footswitch binding — owned (runtime/user) form of [`ButtonConfig`].
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnedButton {
+    pub label: Label,
+    pub color: LedColor,
+    pub on_press: Action,
+    pub on_long_press: Action,
+}
+
+/// One page — owned (runtime/user) form of [`Page`].
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnedPage {
+    pub name: PageName,
+    pub buttons: [OwnedButton; PAGE_BUTTONS],
+}
+
+/// A complete user configuration: an ordered list of owned pages.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeConfig {
+    pub pages: heapless::Vec<OwnedPage, MAX_PAGES>,
+}
+
+/// Copy `s` into a fixed-cap string, truncating at a char boundary if it
+/// overflows `N` (well-formed for non-ASCII input).
+fn copy_str<const N: usize>(s: &str) -> heapless::String<N> {
+    let mut out = heapless::String::new();
+    for ch in s.chars() {
+        if out.push(ch).is_err() {
+            break;
+        }
+    }
+    out
+}
+
+impl OwnedButton {
+    fn from_static(b: &ButtonConfig) -> Self {
+        Self {
+            label: copy_str(b.label),
+            color: b.color,
+            on_press: b.on_press,
+            on_long_press: b.on_long_press,
+        }
+    }
+}
+
+impl OwnedPage {
+    fn from_static(p: &Page) -> Self {
+        Self {
+            name: copy_str(p.name),
+            buttons: core::array::from_fn(|i| OwnedButton::from_static(&p.buttons[i])),
+        }
+    }
+}
+
+impl RuntimeConfig {
+    /// Build an owned config from a baked [`Config`], cloning the `'static`
+    /// strings into owned ones. Pages beyond [`MAX_PAGES`] are dropped.
+    pub fn from_static(c: &Config) -> Self {
+        let mut pages = heapless::Vec::new();
+        for p in c.pages {
+            if pages.push(OwnedPage::from_static(p)).is_err() {
+                break;
+            }
+        }
+        Self { pages }
+    }
+
+    /// The firmware's built-in default, as an owned config.
+    pub fn default_config() -> Self {
+        Self::from_static(&DEFAULT_CONFIG)
+    }
+
+    /// Number of pages.
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Borrow a page by index, clamped so an out-of-range index can't panic.
+    pub fn page(&self, index: usize) -> &OwnedPage {
+        let last = self.pages.len().saturating_sub(1);
+        &self.pages[index.min(last)]
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self::default_config()
+    }
+}
+
+/// A config (de)serialization failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+pub enum ConfigError {
+    /// The config did not fit the provided buffer / was otherwise un-encodable.
+    Serialize,
+    /// The bytes were not a valid serialized config.
+    Deserialize,
+}
+
+/// Serialize a config into `buf` as a compact postcard blob, returning the
+/// written prefix. `buf` must be large enough (a few KB covers [`MAX_PAGES`]).
+pub fn serialize<'a>(cfg: &RuntimeConfig, buf: &'a mut [u8]) -> Result<&'a [u8], ConfigError> {
+    postcard::to_slice(cfg, buf)
+        .map(|written| &*written)
+        .map_err(|_| ConfigError::Serialize)
+}
+
+/// Deserialize a config from a postcard blob.
+pub fn deserialize(bytes: &[u8]) -> Result<RuntimeConfig, ConfigError> {
+    postcard::from_bytes(bytes).map_err(|_| ConfigError::Deserialize)
 }
