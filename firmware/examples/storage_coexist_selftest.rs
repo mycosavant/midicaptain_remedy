@@ -111,7 +111,10 @@ fn max_config() -> RuntimeConfig {
     for _ in 0..config::MAX_PAGES {
         let _ = pages.push(page.clone());
     }
-    RuntimeConfig { pages }
+    RuntimeConfig {
+        pages,
+        midi_thru: config::ThruRoutes::NONE,
+    }
 }
 
 /// Load every setting and assert it equals `want`, or panic with `ctx`.
