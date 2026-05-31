@@ -128,11 +128,29 @@ async fn main(spawner: Spawner) {
     // ── Storage: load persisted settings (defaults on a blank device) ──
     let mut storage = Storage::new(p.FLASH);
     // Recovery hatch: hold UP+DOWN during power-on to wipe persisted settings
-    // back to factory defaults (e.g. to clear a bad MIDI channel or pedal
-    // calibration). Checked before load so the wipe takes effect this boot.
-    if footswitches[8].is_low() && footswitches[9].is_low() {
-        warn!("factory reset: UP+DOWN held at boot — erasing settings");
-        let _ = storage.factory_reset().await;
+    // *and* the stored user config back to factory defaults — `factory_reset`
+    // erases the whole flash KV map (clears a bad MIDI channel, pedal
+    // calibration, or a pushed config that bricks the UI). Checked before load
+    // so the wipe takes effect this boot.
+    //
+    // The footswitch inputs were created just above with internal pull-ups; the
+    // lines take a moment to charge high after `Input::new`, so an immediate
+    // read can return a spurious LOW that looks like the combo and wipes
+    // everything on a normal boot (observed on hardware — "factory reset" fired
+    // with nothing held). Guard against it two ways: let the pull-ups settle
+    // first, then require the combo to be *held* — sample twice ~50 ms apart and
+    // reset only if both samples agree. A genuine hold passes; a power-on
+    // transient does not.
+    let combo_held = || footswitches[8].is_low() && footswitches[9].is_low();
+    embassy_time::Timer::after_millis(5).await; // let the pull-ups settle
+    if combo_held() {
+        embassy_time::Timer::after_millis(50).await; // confirm it's a real hold
+        if combo_held() {
+            warn!("factory reset: UP+DOWN held at boot — erasing settings + config");
+            let _ = storage.factory_reset().await;
+        } else {
+            info!("boot: UP+DOWN transient at power-on, not a hold — no factory reset");
+        }
     }
     let settings = storage.load().await;
     info!("settings: {}", settings);
