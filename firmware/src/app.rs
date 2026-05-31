@@ -150,6 +150,12 @@ pub struct Router {
     /// Per-CC toggle state (on/off), indexed by CC number. Cleared on page
     /// change; synced from incoming MIDI CC.
     toggles: [bool; 128],
+    /// Per-page radio/select group selection: for each group (`index =
+    /// group_id - 1`), the scan-index of the currently-selected member, or
+    /// `None`. Mutated by a short press on a grouped button; cleared on page
+    /// change + config apply (like [`Self::toggles`]). Local-only — not driven
+    /// by inbound MIDI.
+    group_sel: [Option<u8>; config::MAX_GROUPS],
     /// Press timestamps for footswitch long-press detection, per switch index.
     press_at: [Option<Instant>; buttons::COUNT],
     /// For [`CcValue::Momentary`]: the CC a held switch is driving (sent `127`
@@ -189,6 +195,7 @@ impl Router {
             enc_value: 0,
             current_program: 0,
             toggles: [false; 128],
+            group_sel: [None; config::MAX_GROUPS],
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
@@ -219,16 +226,26 @@ impl Router {
             switches: [config::color::OFF; pins::Switch::COUNT],
         };
         for (bi, btn) in page.buttons.iter().enumerate() {
-            let base = match btn.on_press.toggle_cc() {
-                Some(cc) => {
-                    if self.toggles[cc as usize] {
-                        btn.color
-                    } else {
-                        leds::idle_dim(btn.color)
-                    }
+            let base = if let Some(slot) = group_slot(btn.group) {
+                // Radio/select group: the selected member is full, the rest dim.
+                // Takes precedence over toggle feedback.
+                if self.group_sel[slot] == Some(bi as u8) {
+                    btn.color
+                } else {
+                    leds::idle_dim(btn.color)
                 }
-                None if matches!(btn.on_press, Action::None) => config::color::OFF,
-                None => btn.color,
+            } else {
+                match btn.on_press.toggle_cc() {
+                    Some(cc) => {
+                        if self.toggles[cc as usize] {
+                            btn.color
+                        } else {
+                            leds::idle_dim(btn.color)
+                        }
+                    }
+                    None if matches!(btn.on_press, Action::None) => config::color::OFF,
+                    None => btn.color,
+                }
             };
             // Scan-index → WS2812 chain position.
             frame.switches[config::SWITCH_FOR_BUTTON[bi] as usize] = scale(base, bright);
@@ -247,10 +264,12 @@ impl Router {
         self.refresh_leds();
     }
 
-    /// Switch pages, clearing per-page toggle state (CLAUDE.md) and repainting.
+    /// Switch pages, clearing per-page toggle + group state (CLAUDE.md) and
+    /// repainting.
     fn change_page(&mut self, page: usize) {
         self.page = page.min(self.config.page_count().saturating_sub(1));
         self.toggles = [false; 128];
+        self.group_sel = [None; config::MAX_GROUPS];
         self.refresh_page();
     }
 
@@ -311,15 +330,26 @@ impl Router {
         // Pick the action and clone the label out of the (immutably-borrowed)
         // config *before* `dispatch` takes `&mut self` — the owned label means
         // no config borrow is held across the mutable call.
-        let (action, label) = {
+        let (action, label, group) = {
             let btn = &self.current_page().buttons[idx];
             let action = if long && btn.on_long_press != Action::None {
                 btn.on_long_press
             } else {
                 btn.on_press
             };
-            (action, btn.label.clone())
+            (action, btn.label.clone(), btn.group)
         };
+        // A short press on a grouped button makes it that group's selection
+        // (radio behaviour), deselecting the previous member. Recorded before
+        // dispatch so the LED repaint reflects the new selection no matter what
+        // the action does. Long-presses don't latch — they fire `on_long_press`
+        // (e.g. tuner / page nav) without changing the group.
+        if !long {
+            if let Some(slot) = group_slot(group) {
+                self.group_sel[slot] = Some(idx as u8);
+                self.refresh_leds();
+            }
+        }
         self.dispatch(action, label);
     }
 
@@ -624,12 +654,22 @@ impl Router {
                 self.mode = Mode::Performance;
                 self.page = 0;
                 self.toggles = [false; 128];
+                self.group_sel = [None; config::MAX_GROUPS];
                 self.refresh_page();
                 defmt::info!("router: config applied ({} page(s))", self.config.page_count());
                 ConfigResp::Ok
             }
         }
     }
+}
+
+/// Map a 1-based config group id to its [`Router::group_sel`] slot, or `None`
+/// if the id is `0` (ungrouped) or out of range (`> MAX_GROUPS`). Out-of-range
+/// ids render and behave as ungrouped — a malformed config can't index past the
+/// array.
+fn group_slot(group: u8) -> Option<usize> {
+    let g = group as usize;
+    (1..=config::MAX_GROUPS).contains(&g).then_some(g - 1)
 }
 
 /// Scale an LED colour by a brightness percentage (`0..=100`).

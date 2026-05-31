@@ -102,6 +102,7 @@ fn max_config() -> RuntimeConfig {
             cc: 127,
             value: CcValue::Fixed(127),
         },
+        group: config::MAX_GROUPS as u8,
     };
     let page = OwnedPage {
         name: fill_name(),
@@ -204,6 +205,20 @@ async fn main(_spawner: Spawner) {
     let loaded_max = storage.load_config(scratch).await;
     defmt::assert!(loaded_max == maxc, "max config round-trip mismatch");
     info!("  worst-case config + settings coexist OK");
+
+    // Clean up after ourselves. This test PERSISTS a worst-case 8-page config
+    // (every label "XXXX", every button cc127/group=8) plus test settings. If
+    // left in flash they poison the next boot of the real firmware, which would
+    // load this garbage config instead of the baked default (XXXX labels, no
+    // page nav, identical pages). Erase the whole store so the device is left
+    // at defaults — same hygiene config_selftest applies after its checks.
+    defmt::unwrap!(storage.factory_reset().await);
+    let after = storage.load_config(scratch).await;
+    defmt::assert!(
+        after == RuntimeConfig::default_config(),
+        "post-cleanup load != baked default"
+    );
+    info!("  store erased -- device left at baked default (cleanup) OK");
 
     info!("storage_coexist_selftest: ALL PASS");
 

@@ -27,14 +27,25 @@
 
 /// Protocol version, sent in `HELLO`. Bump on any breaking wire change.
 ///
+/// v3: `config::OwnedButton` gained the `group` field (mutual-exclusion radio
+/// groups; appended after `on_long_press`, one byte per button), so a v2 config
+/// blob no longer round-trips.
 /// v2: `config::RuntimeConfig` gained the `midi_thru` field (appended after
 /// `pages`), so a v1 config blob no longer round-trips — a breaking change to
 /// the GET/SET payload format.
-pub const PROTO_VERSION: u8 = 2;
+pub const PROTO_VERSION: u8 = 3;
 
-/// Largest config payload we carry (the postcard `RuntimeConfig` blob ceiling;
-/// see `config::MAX_PAGES`). Buffers are sized from this.
-pub const MAX_PAYLOAD: usize = 2048;
+/// Largest config payload we carry — the postcard `RuntimeConfig` blob ceiling
+/// ([`config::MAX_SERIALIZED_LEN`]). Deriving it (rather than hardcoding) keeps
+/// the GET-reply serialization buffer and the frame buffers sized to the
+/// worst-case config automatically: grow a config cap ([`config::MAX_PAGES`],
+/// label/name caps, the per-button `group` byte) and every buffer here grows
+/// with it, so any config the device can *store* it can also *return*. This is
+/// a size ceiling, not config semantics — the codec stays model-blind.
+///
+/// [`config::MAX_SERIALIZED_LEN`]: crate::config::MAX_SERIALIZED_LEN
+/// [`config::MAX_PAGES`]: crate::config::MAX_PAGES
+pub const MAX_PAYLOAD: usize = crate::config::MAX_SERIALIZED_LEN;
 /// Largest `body` (= payload + cmd + seq + crc).
 pub const MAX_BODY: usize = MAX_PAYLOAD + 4;
 /// Largest encoded frame incl. COBS overhead and the `0x00` delimiter. RX/TX
