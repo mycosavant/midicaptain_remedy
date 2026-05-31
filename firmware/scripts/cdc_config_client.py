@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 2  # v2: RuntimeConfig gained the midi_thru field (see proto.rs)
+PROTO_VERSION = 3  # v3: each button gained the `group` field (radio groups); v2 added midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -240,11 +240,15 @@ def decode_config(blob: bytes) -> dict:
         for _ in range(PAGE_BUTTONS):
             label = r.s()
             color = [r.u8(), r.u8(), r.u8()]
+            on_press = _dec_action(r)
+            on_long_press = _dec_action(r)
+            group = r.u8()  # mutual-exclusion radio group (0 = ungrouped)
             buttons.append({
                 "label": label,
                 "color": color,
-                "on_press": _dec_action(r),
-                "on_long_press": _dec_action(r),
+                "on_press": on_press,
+                "on_long_press": on_long_press,
+                "group": group,
             })
         pages.append({"name": name, "buttons": buttons})
     # ThruRoutes: 4 bools, appended after pages (RuntimeConfig field order).
@@ -272,6 +276,7 @@ def encode_config(cfg: dict) -> bytes:
             out += bytes(b["color"])
             out += _enc_action(b["on_press"])
             out += _enc_action(b["on_long_press"])
+            out.append(int(b.get("group", 0)) & 0xFF)  # radio group (0 = ungrouped)
     # ThruRoutes: 4 bools after pages. Tolerate older configs missing the field.
     thru = cfg.get("midi_thru", {})
     for field in THRU_FIELDS:
@@ -329,7 +334,8 @@ def _print_config(cfg: dict) -> None:
             act = b["on_press"]
             extra = "" if b["on_long_press"]["type"] == "none" \
                 else f"  long={b['on_long_press']}"
-            print(f"    [{j}] {b['label']!r:>8}  rgb{tuple(b['color'])}  {act}{extra}")
+            grp = f"  group={b['group']}" if b.get("group") else ""
+            print(f"    [{j}] {b['label']!r:>8}  rgb{tuple(b['color'])}  {act}{extra}{grp}")
     thru = cfg.get("midi_thru", {})
     on = [f for f in THRU_FIELDS if thru.get(f)]
     print(f"  midi_thru: {', '.join(on) if on else 'none'}")

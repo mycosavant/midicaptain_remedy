@@ -27,6 +27,14 @@ use crate::pins::Switch;
 /// Number of footswitch slots on a page (matches the buttons task).
 pub const PAGE_BUTTONS: usize = 10;
 
+/// Max number of mutual-exclusion (radio/select) groups per page. A button's
+/// [`ButtonConfig::group`] is `0` for ungrouped or `1..=MAX_GROUPS` to join a
+/// group; pressing a grouped button selects it and deselects the rest of its
+/// group. Group ids outside this range are treated as ungrouped (the router
+/// ignores them defensively, so a malformed config can't panic). Eight is
+/// ample for ten switches.
+pub const MAX_GROUPS: usize = 8;
+
 /// Map a `ButtonEvent.index` (GPIO scan order, `SW1..SW4,A..D,UP,DOWN`) to
 /// its WS2812 chain position ([`Switch`]). The two orders differ only in
 /// where UP/DOWN sit, but that difference is real — get it wrong and the
@@ -130,6 +138,13 @@ pub struct ButtonConfig {
     pub on_press: Action,
     /// Action on a long press (`Action::None` = none).
     pub on_long_press: Action,
+    /// Mutual-exclusion group (`0` = ungrouped, `1..=`[`MAX_GROUPS`]). Buttons
+    /// that share a non-zero group are radio-style: a short press selects this
+    /// one (full-brightness LED) and deselects the others in the group
+    /// (dimmed). Selection is per-page and local — cleared on page change /
+    /// config apply, and not driven by inbound MIDI. Takes LED precedence over
+    /// toggle feedback if a button is somehow both.
+    pub group: u8,
 }
 
 impl ButtonConfig {
@@ -139,6 +154,7 @@ impl ButtonConfig {
         color: color::OFF,
         on_press: Action::None,
         on_long_press: Action::None,
+        group: 0,
     };
 }
 
@@ -197,11 +213,12 @@ pub mod color {
 const PAGE_DEFAULT: Page = Page {
     name: "Default",
     buttons: [
-        // SW1..SW4 → Program Change 0..3 (presets).
-        button("PRE1", color::WHITE, Action::ProgramChange { program: 0 }),
-        button("PRE2", color::WHITE, Action::ProgramChange { program: 1 }),
-        button("PRE3", color::WHITE, Action::ProgramChange { program: 2 }),
-        button("PRE4", color::WHITE, Action::ProgramChange { program: 3 }),
+        // SW1..SW4 → Program Change 0..3 (presets), a radio group (group 1):
+        // the active preset stays lit, the others dim.
+        radio("PRE1", color::WHITE, Action::ProgramChange { program: 0 }, 1),
+        radio("PRE2", color::WHITE, Action::ProgramChange { program: 1 }, 1),
+        radio("PRE3", color::WHITE, Action::ProgramChange { program: 2 }, 1),
+        radio("PRE4", color::WHITE, Action::ProgramChange { program: 3 }, 1),
         // A..D → CC toggles (FX on/off), with LED on/off feedback. D also
         // long-presses into the tuner.
         button("FX1", color::GREEN, toggle(80)),
@@ -212,6 +229,7 @@ const PAGE_DEFAULT: Page = Page {
             color: color::PURPLE,
             on_press: toggle(83),
             on_long_press: Action::TunerToggle,
+            group: 0,
         },
         // UP/DOWN → PC on press, page nav on long-press.
         ButtonConfig {
@@ -219,12 +237,14 @@ const PAGE_DEFAULT: Page = Page {
             color: color::CYAN,
             on_press: Action::ProgramChange { program: 4 },
             on_long_press: Action::PageNext,
+            group: 0,
         },
         ButtonConfig {
             label: "BANK-",
             color: color::CYAN,
             on_press: Action::ProgramChange { program: 5 },
             on_long_press: Action::PagePrev,
+            group: 0,
         },
     ],
 };
@@ -233,21 +253,25 @@ const PAGE_DEFAULT: Page = Page {
 const PAGE_KATANA: Page = Page {
     name: "Katana",
     buttons: [
-        button("CLEAN", color::GREEN, Action::Sysex(SysexCmd::AmpType(1))),
-        button("CRUNCH", color::AMBER, Action::Sysex(SysexCmd::AmpType(2))),
-        button("LEAD", color::RED, Action::Sysex(SysexCmd::AmpType(3))),
-        // BROWN amp on press; long-press into the tuner (consistent with D on
-        // the default page).
+        // Amp types (group 1) and channel recall (group 2) are two independent
+        // radio groups — the active amp and the active channel each stay lit.
+        radio("CLEAN", color::GREEN, Action::Sysex(SysexCmd::AmpType(1)), 1),
+        radio("CRUNCH", color::AMBER, Action::Sysex(SysexCmd::AmpType(2)), 1),
+        radio("LEAD", color::RED, Action::Sysex(SysexCmd::AmpType(3)), 1),
+        // BROWN amp on press (group 1); long-press into the tuner (consistent
+        // with D on the default page). Group selection latches on the short
+        // press only — a long-press enters the tuner without changing the amp.
         ButtonConfig {
             label: "BROWN",
             color: color::PURPLE,
             on_press: Action::Sysex(SysexCmd::AmpType(4)),
             on_long_press: Action::TunerToggle,
+            group: 1,
         },
-        button("CH1", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(1))),
-        button("CH2", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(2))),
-        button("CH3", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(3))),
-        button("CH4", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(4))),
+        radio("CH1", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(1)), 2),
+        radio("CH2", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(2)), 2),
+        radio("CH3", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(3)), 2),
+        radio("CH4", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(4)), 2),
         button("PAGE+", color::CYAN, Action::PageNext),
         button("PAGE-", color::CYAN, Action::PagePrev),
     ],
@@ -265,6 +289,24 @@ const fn button(label: &'static str, color: LedColor, on_press: Action) -> Butto
         color,
         on_press,
         on_long_press: Action::None,
+        group: 0,
+    }
+}
+
+/// Helper: a radio-group button — single short-press action, no long-press,
+/// member of mutual-exclusion `group` (`1..=`[`MAX_GROUPS`]).
+const fn radio(
+    label: &'static str,
+    color: LedColor,
+    on_press: Action,
+    group: u8,
+) -> ButtonConfig {
+    ButtonConfig {
+        label,
+        color,
+        on_press,
+        on_long_press: Action::None,
+        group,
     }
 }
 
@@ -313,7 +355,7 @@ pub const NAME_CAP: usize = 16;
 /// - `RuntimeConfig` → `Vec<OwnedPage, MAX_PAGES>` + `ThruRoutes`
 /// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
 /// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
-/// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action`
+/// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action` + `group` (1)
 /// - `Action`     → 1-byte discriminant + ≤3-byte payload (`MidiCc{ cc, CcValue::Fixed }`)
 /// - `ThruRoutes` → 4 × `bool` (1 byte each)
 pub const MAX_SERIALIZED_LEN: usize = {
@@ -321,7 +363,8 @@ pub const MAX_SERIALIZED_LEN: usize = {
     // `MidiCc { cc: u8, value: CcValue }` = cc(1) + CcValue(disc 1 + Fixed u8 1) = 3.
     const ACTION_MAX: usize = 1 + 3;
     // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
-    const BUTTON_MAX: usize = (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX;
+    const BUTTON_MAX: usize =
+        (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX + 1 /* group u8 */;
     const PAGE_MAX: usize = (1 + NAME_CAP) + PAGE_BUTTONS * BUTTON_MAX;
     const THRU_MAX: usize = 4; // ThruRoutes: 4 bools
     1 /* Vec length varint */ + MAX_PAGES * PAGE_MAX + THRU_MAX
@@ -339,6 +382,15 @@ pub struct OwnedButton {
     pub color: LedColor,
     pub on_press: Action,
     pub on_long_press: Action,
+    /// Mutual-exclusion group (`0` = ungrouped). See [`ButtonConfig::group`].
+    ///
+    /// NOTE: serde/postcard serializes struct fields in declaration order — this
+    /// is **appended** after `on_long_press`. Adding it is a breaking wire change
+    /// (an older blob lacks the trailing byte per button and fails to
+    /// deserialize, falling back to the default on upgrade), so
+    /// [`crate::proto::PROTO_VERSION`] is bumped alongside it. Only append; never
+    /// reorder.
+    pub group: u8,
 }
 
 /// One page — owned (runtime/user) form of [`Page`].
@@ -408,6 +460,7 @@ impl OwnedButton {
             color: b.color,
             on_press: b.on_press,
             on_long_press: b.on_long_press,
+            group: b.group,
         }
     }
 }

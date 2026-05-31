@@ -102,6 +102,7 @@ fn max_config() -> RuntimeConfig {
             cc: 127,
             value: CcValue::Fixed(127),
         },
+        group: config::MAX_GROUPS as u8,
     };
     let page = OwnedPage {
         name: fill_name(),
