@@ -27,6 +27,11 @@
 
 /// Protocol version, sent in `HELLO`. Bump on any breaking wire change.
 ///
+/// v5: `Action` gained the `Hid` variant (USB-HID keyboard / consumer-control
+/// reports — Tier 5), appended after `Cycle`. Existing configs are unaffected on
+/// the wire (the variant is only *present* in a blob that uses it), but the
+/// discriminant space changed, so the version is bumped to keep the webapp
+/// codec in lockstep.
 /// v4: `config::RuntimeConfig` gained the `cycles` pool (multi-state cycles;
 /// appended after `midi_thru`) and `Action` gained the `Cycle` variant, so a v3
 /// config blob no longer round-trips.
@@ -36,7 +41,7 @@
 /// v2: `config::RuntimeConfig` gained the `midi_thru` field (appended after
 /// `pages`), so a v1 config blob no longer round-trips — a breaking change to
 /// the GET/SET payload format.
-pub const PROTO_VERSION: u8 = 4;
+pub const PROTO_VERSION: u8 = 5;
 
 /// Largest config payload we carry — the postcard `RuntimeConfig` blob ceiling
 /// ([`config::MAX_SERIALIZED_LEN`]). Deriving it (rather than hardcoding) keeps

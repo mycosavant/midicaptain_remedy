@@ -177,13 +177,13 @@ RTT should show roughly:
 ```
 MIDICaptain app: boot
 settings: Settings { midi_channel: 1, display_brightness: …, led_brightness: …, pedal_cal: […] }
-config: 2 page(s)
+config: 3 page(s)
 cdc: host connected            (only if the device USB-C is plugged into a host)
 midi mux: USB-MIDI connected
 app: alive                     (then every ~5 s)
 ```
 
-- `storage: stored config corrupt; using default` before `config: 2 page(s)` is
+- `storage: stored config corrupt; using default` before `config: 3 page(s)` is
   **normal on a blank/factory-reset device** — it means "no valid user config in
   flash, using the baked default." After you push a config over CDC it loads
   cleanly without that line.
@@ -195,7 +195,7 @@ app: alive                     (then every ~5 s)
 
 ## 6. On-device manual validation
 
-The baked default (what you get on a factory-reset device) is two pages:
+The baked default (what you get on a factory-reset device) is three pages:
 
 **Page 0 — `Default`**
 
@@ -204,7 +204,7 @@ The baked default (what you get on a factory-reset device) is two pages:
 | SW1–SW4 (0–3) | PRE1–PRE4 | Program Change 0–3 | — | **radio group 1** (white) |
 | A (4) | FX1 | CC 80 toggle | — | green, toggle |
 | B (5) | FX2 | CC 81 toggle | — | blue, toggle |
-| C (6) | FX3 | CC 82 toggle | — | amber, toggle |
+| C (6) | LVL | **cycle** CC 82 = 0→64→127 (wraps) | **reset** cycle to 0 | amber; full off base state, dim on base |
 | D (7) | FX4 | CC 83 toggle | **Tuner** | purple, toggle |
 | UP (8) | BANK+ | Program Change 4 | **Page next** | cyan |
 | DOWN (9) | BANK- | Program Change 5 | **Page prev** | cyan |
@@ -218,15 +218,38 @@ The baked default (what you get on a factory-reset device) is two pages:
 | A–D | CH1–CH4 | SysEx RecallPreset 1–4 | **radio group 2** |
 | UP/DOWN | PAGE+/PAGE- | Page next / prev | cyan |
 
+**Page 2 — `HID`** (long-press UP/DOWN to reach it) — USB-HID keyboard + media
+keys to the **host** (the device enumerates a HID interface alongside MIDI + CDC).
+Watch the host, not `midimon` — these send HID reports, not MIDI.
+
+| Switch | Label | Sends (HID) | LED |
+|---|---|---|---|
+| SW1 | SPACE | keyboard `Space` | white |
+| SW2 | ENTER | keyboard `Enter` | white |
+| SW3 | UNDO | keyboard `Ctrl+Z` | cyan |
+| SW4 | REDO | keyboard `Ctrl+Shift+Z` | cyan |
+| A | PLAY | consumer `Play/Pause` | green |
+| B | VOL+ | consumer `Volume Up` | blue |
+| C | VOL- | consumer `Volume Down` | blue |
+| D | MUTE | consumer `Mute` | amber |
+| UP/DOWN | PAGE+/PAGE- | Page next / prev | purple |
+
 ### What to check
 
-- **Display:** page title (`Default` / `Katana`) and page index (`1/2`). Pressing
-  a button flashes its label on the status line. *No `XXXX` —* if you see it,
-  [factory-reset](#factory-reset-recover-from-a-bad-config-or-settings).
-- **LEDs:** bound buttons lit at their colour, unbound dark. Toggle buttons (FX1–4)
+- **Display:** page title (`Default` / `Katana` / `HID`) and page index (`1/3`).
+  Pressing a button flashes its label on the status line. *No `XXXX` —* if you see
+  it, [factory-reset](#factory-reset-recover-from-a-bad-config-or-settings).
+- **LEDs:** bound buttons lit at their colour, unbound dark. Toggle buttons (FX1/2/4)
   go full-bright when ON, dim when OFF.
-- **Page nav:** long-press UP or DOWN cycles pages; toggle/group state clears on
-  page change.
+- **Multi-state cycle (LVL, page 0 C):** tap repeatedly → `CC 82` = 0, 64, 127,
+  then wraps to 0. LED is full on 64/127 and dim on 0 (the base state). Long-press
+  → resets to 0 (emits `CC 82 0`).
+- **USB-HID (page 2):** with the device USB-C in a computer, focus a text field and
+  tap SPACE/ENTER/UNDO/REDO — the keystrokes (incl. Ctrl+Z / Ctrl+Shift+Z) land on
+  the host. Tap PLAY/VOL+/VOL-/MUTE — the host's media keys respond. These produce
+  **no MIDI**; verify on the host, not in `midimon`.
+- **Page nav:** long-press UP or DOWN cycles pages; toggle/group/cycle state clears
+  on page change.
 - **Encoder:** turn → CC 7 (volume). **Long-press → settings menu.**
 - **Expression pedals:** pedal 1 → CC 1, pedal 2 → CC 7 (see them in
   [midimon](#8-watching-the-midi-output)).
@@ -270,11 +293,12 @@ python scripts/cdc_config_client.py COM9 tweak       # rename page 1 + recolor a
 What to look for:
 
 - **`hello`** prints the **protocol version** — must match `proto::PROTO_VERSION`
-  (currently **3**). A mismatch means the firmware on the board predates the
-  feature you're testing — reflash.
-- **`get`** decodes the live config. After a factory reset it shows the 2 baked
-  pages with real labels and the radio groups (`PRE1–4 group=1`, amps `group=1`,
-  `CH1–4 group=2`).
+  (currently **5**). A mismatch means the firmware on the board predates the
+  feature you're testing — reflash. (v5 = HID actions; v4 = cycles; v3 = groups.)
+- **`get`** decodes the live config. After a factory reset it shows the 3 baked
+  pages with real labels, the radio groups (`PRE1–4 group=1`, amps `group=1`,
+  `CH1–4 group=2`), the `LVL` cycle (`cycle 0: 3 step(s) long=reset`), and the
+  page-2 HID actions (`{'type': 'hid', ...}`).
 - **`set` / `tweak`** persist + **hot-reload**: RTT logs `router: config applied
   (N page(s))` and the screen/LEDs update live without a reboot. The config also
   survives a `probe-rs reset`.
@@ -324,6 +348,10 @@ them via `cdc_config_client.py set`.
 | **Select / radio group** | Page 0: tap PRE1 then PRE2 | each tap sends its `PC` | **lit LED moves**; only one of the group full-bright, rest dim |
 | **Two groups, independent** | Katana page: CLEAN→LEAD, then CH1→CH3 | amp SysEx, then channel SysEx | amp group and channel group light independently |
 | **Group ≠ latch on long-press** | Katana page: long-press BROWN | `CC#25 127` (enters tuner) | amp selection **unchanged** |
+| **Multi-state cycle** | Page 0: tap LVL (C) repeatedly | `CC 82` = 0, 64, 127, wrap | LED dim on base (0), full on 64/127 |
+| **Cycle long-press (reset)** | Page 0: long-press LVL | `CC 82 0` | LED returns to dim (base) |
+| **USB-HID keyboard** | Page 2: tap SPACE / UNDO | — *(no MIDI)* | host receives `Space` / `Ctrl+Z` keystroke |
+| **USB-HID consumer** | Page 2: tap PLAY / VOL+ | — *(no MIDI)* | host's media transport / volume responds |
 
 ---
 

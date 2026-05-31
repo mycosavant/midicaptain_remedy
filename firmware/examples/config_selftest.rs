@@ -19,6 +19,7 @@ use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use midicaptain_firmware::config::{self, Action, CcValue, RuntimeConfig};
+use midicaptain_firmware::events::HidReport;
 use midicaptain_firmware::storage::{self, Storage};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -39,6 +40,14 @@ fn sample_config() -> RuntimeConfig {
     };
     // Exercise the radio-group field (Tier 3) through the round-trip too.
     cfg.pages[0].buttons[1].group = config::MAX_GROUPS as u8;
+    // Exercise the HID action variant (Tier 5): a Ctrl+Shift keystroke and a
+    // consumer/media usage, so both `HidReport` shapes round-trip.
+    cfg.pages[0].buttons[1].on_long_press = Action::Hid(HidReport::Key {
+        keycode: 0x1D, // Z
+        modifiers: 0x03, // Ctrl | Shift
+    });
+    cfg.pages[0].buttons[2].on_long_press =
+        Action::Hid(HidReport::Consumer { usage: 0x00CD }); // Play/Pause
     cfg
 }
 

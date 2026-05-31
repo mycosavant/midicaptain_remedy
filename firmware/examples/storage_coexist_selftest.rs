@@ -44,6 +44,7 @@ use heapless::Vec;
 use midicaptain_firmware::config::{
     self, Action, CcValue, CycleDef, CycleLong, OwnedButton, OwnedPage, RuntimeConfig, StepAction,
 };
+use midicaptain_firmware::events::HidReport;
 use midicaptain_firmware::storage::{self, PedalCal, Settings, Storage};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -93,17 +94,14 @@ fn fill_name() -> config::PageName {
 /// the largest `Action` variant on both press slots — the biggest blob the model
 /// can produce, hence the hardest case for the settings store's scan buffer.
 fn max_config() -> RuntimeConfig {
+    // Both action slots use the *largest* `Action` variant — `Hid(Consumer { usage
+    // })` with `u16::MAX`, which postcard varint-encodes to the full 3 bytes — so
+    // the blob hits `MAX_SERIALIZED_LEN` exactly, not just an under-filled bound.
     let button = OwnedButton {
         label: fill_label(),
         color: config::color::WHITE,
-        on_press: Action::MidiCc {
-            cc: 127,
-            value: CcValue::Fixed(127),
-        },
-        on_long_press: Action::MidiCc {
-            cc: 127,
-            value: CcValue::Fixed(127),
-        },
+        on_press: Action::Hid(HidReport::Consumer { usage: u16::MAX }),
+        on_long_press: Action::Hid(HidReport::Consumer { usage: u16::MAX }),
         group: config::MAX_GROUPS as u8,
     };
     let page = OwnedPage {
