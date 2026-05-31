@@ -35,6 +35,17 @@ pub const PAGE_BUTTONS: usize = 10;
 /// ample for ten switches.
 pub const MAX_GROUPS: usize = 8;
 
+/// Max number of multi-state cycle definitions ([`CycleDef`]) a config can hold.
+/// Cycles live in a shared per-config pool ([`RuntimeConfig::cycles`]); buttons
+/// reference one by index via [`Action::Cycle`]. Pooling (vs storing steps in
+/// each button) keeps the per-button size — and thus the worst-case blob —
+/// small, and lets several buttons share a cycle.
+pub const MAX_CYCLES: usize = 8;
+
+/// Max states (steps) in one [`CycleDef`]. A button bound to that cycle advances
+/// through these on each short press, wrapping at the end.
+pub const MAX_STEPS: usize = 8;
+
 /// Map a `ButtonEvent.index` (GPIO scan order, `SW1..SW4,A..D,UP,DOWN`) to
 /// its WS2812 chain position ([`Switch`]). The two orders differ only in
 /// where UP/DOWN sit, but that difference is real — get it wrong and the
@@ -83,6 +94,39 @@ pub enum SysexCmd {
     Volume(u8),
 }
 
+/// One state of a multi-state cycle ([`CycleDef`]) — what gets emitted when a
+/// cycle button lands on this step. Deliberately a **flat** action subset (no
+/// nesting, no page-nav/tuner/toggle/momentary): each step sets a concrete
+/// value, which is exactly the "keytimes" idiom and keeps the type bounded for
+/// the worst-case size guarantee.
+///
+/// NOTE: serde keys variants by position — append only.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub enum StepAction {
+    /// Send `cc = value` (a fixed CC value — the cycling-CC / keytimes case).
+    MidiCc { cc: u8, value: u8 },
+    /// Send a Program Change (cycle through presets).
+    ProgramChange { program: u8 },
+    /// Send a Katana SysEx command (cycle amp types, etc.).
+    Sysex(SysexCmd),
+}
+
+/// How a cycle button's *long* press behaves. Stored per [`CycleDef`] so the
+/// choice is configurable per cycle.
+///
+/// NOTE: serde keys variants by position — append only.
+#[derive(Clone, Copy, PartialEq, Eq, Default, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub enum CycleLong {
+    /// Long press is *not* claimed by the cycle — the button's normal
+    /// [`ButtonConfig::on_long_press`] action runs (page nav, tuner, …).
+    #[default]
+    None,
+    /// Long press resets the cycle to its first state (and emits it).
+    Reset,
+    /// Long press steps the cycle *backward* (and emits that state).
+    Reverse,
+}
+
 /// What a button does when triggered. Port of the action types in
 /// `remedy/lib/events.py::Action.from_config`.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
@@ -111,6 +155,15 @@ pub enum Action {
     ///
     /// NOTE: append-only — see [`CcValue::Momentary`].
     ProgramChangeStep(i8),
+    /// Multi-state cycle: a short press advances through the referenced
+    /// [`CycleDef`]'s states (by index into [`RuntimeConfig::cycles`]), emitting
+    /// each in turn; the long press follows the cycle's [`CycleLong`]. Only
+    /// meaningful as a button's `on_press` — the router resolves it there (where
+    /// it has the button index for per-button position); in any other slot it is
+    /// inert. An out-of-range index is a no-op.
+    ///
+    /// NOTE: append-only — see [`CcValue::Momentary`].
+    Cycle(u8),
 }
 
 impl Action {
@@ -165,10 +218,21 @@ pub struct Page {
     pub buttons: [ButtonConfig; PAGE_BUTTONS],
 }
 
-/// The whole configuration: an ordered, non-empty list of pages.
+/// A multi-state cycle definition — baked (`'static`) form of [`CycleDef`].
+pub struct StaticCycleDef {
+    /// The states emitted in turn (short press advances, wrapping).
+    pub steps: &'static [StepAction],
+    /// How the long press behaves.
+    pub long: CycleLong,
+}
+
+/// The whole configuration: an ordered, non-empty list of pages plus the shared
+/// pool of cycle definitions buttons reference by index.
 #[derive(Clone, Copy)]
 pub struct Config {
     pub pages: &'static [Page],
+    /// Shared cycle pool, indexed by [`Action::Cycle`].
+    pub cycles: &'static [StaticCycleDef],
 }
 
 impl Config {
@@ -223,7 +287,9 @@ const PAGE_DEFAULT: Page = Page {
         // long-presses into the tuner.
         button("FX1", color::GREEN, toggle(80)),
         button("FX2", color::BLUE, toggle(81)),
-        button("FX3", color::AMBER, toggle(82)),
+        // C → a 3-state cycle (CC 82 = 0/64/127), demoing "keytimes". Long-press
+        // resets it to the first state (CycleLong::Reset). References cycle 0.
+        cycle_button("LVL", color::AMBER, 0),
         ButtonConfig {
             label: "FX4",
             color: color::PURPLE,
@@ -279,8 +345,22 @@ const PAGE_KATANA: Page = Page {
 
 const PAGES: [Page; 2] = [PAGE_DEFAULT, PAGE_KATANA];
 
+/// Shared cycle pool. Cycle 0 (referenced by page-0 "LVL") steps CC 82 through
+/// three levels, with the long press resetting to the first.
+const CYCLES: [StaticCycleDef; 1] = [StaticCycleDef {
+    steps: &[
+        StepAction::MidiCc { cc: 82, value: 0 },
+        StepAction::MidiCc { cc: 82, value: 64 },
+        StepAction::MidiCc { cc: 82, value: 127 },
+    ],
+    long: CycleLong::Reset,
+}];
+
 /// The baked-in default configuration the firmware boots with.
-pub const DEFAULT_CONFIG: Config = Config { pages: &PAGES };
+pub const DEFAULT_CONFIG: Config = Config {
+    pages: &PAGES,
+    cycles: &CYCLES,
+};
 
 /// Helper: a button with a single short-press action and no long-press.
 const fn button(label: &'static str, color: LedColor, on_press: Action) -> ButtonConfig {
@@ -318,6 +398,18 @@ const fn toggle(cc: u8) -> Action {
     }
 }
 
+/// Helper: a button bound to cycle `index` (in the config's cycle pool), no
+/// long-press of its own, ungrouped.
+const fn cycle_button(label: &'static str, color: LedColor, index: u8) -> ButtonConfig {
+    ButtonConfig {
+        label,
+        color,
+        on_press: Action::Cycle(index),
+        on_long_press: Action::None,
+        group: 0,
+    }
+}
+
 // ── Runtime (user-editable) configuration ──────────────────────────────
 //
 // The baked [`DEFAULT_CONFIG`] above is the firmware's built-in fallback. A
@@ -352,22 +444,30 @@ pub const NAME_CAP: usize = 16;
 /// is the largest item in its key-value map).
 ///
 /// Worst-case postcard layout (every cap full, largest enum variants):
-/// - `RuntimeConfig` → `Vec<OwnedPage, MAX_PAGES>` + `ThruRoutes`
+/// - `RuntimeConfig` → `Vec<OwnedPage, MAX_PAGES>` + `ThruRoutes` + `Vec<CycleDef, MAX_CYCLES>`
 /// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
 /// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
 /// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action` + `group` (1)
 /// - `Action`     → 1-byte discriminant + ≤3-byte payload (`MidiCc{ cc, CcValue::Fixed }`)
 /// - `ThruRoutes` → 4 × `bool` (1 byte each)
+/// - `Vec<CycleDef, MAX_CYCLES>` → 1-byte length varint + cycles
+/// - `CycleDef`   → `Vec<StepAction, MAX_STEPS>` (1-byte len + steps) + `CycleLong` (1)
+/// - `StepAction` → 1-byte discriminant + ≤2-byte payload (`MidiCc{ cc, value }`)
 pub const MAX_SERIALIZED_LEN: usize = {
     // 1-byte enum discriminant + largest variant payload.
     // `MidiCc { cc: u8, value: CcValue }` = cc(1) + CcValue(disc 1 + Fixed u8 1) = 3.
+    // (`Action::Cycle(u8)` is only 1+1 = 2, so `MidiCc` stays the largest.)
     const ACTION_MAX: usize = 1 + 3;
     // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
     const BUTTON_MAX: usize =
         (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX + 1 /* group u8 */;
     const PAGE_MAX: usize = (1 + NAME_CAP) + PAGE_BUTTONS * BUTTON_MAX;
     const THRU_MAX: usize = 4; // ThruRoutes: 4 bools
-    1 /* Vec length varint */ + MAX_PAGES * PAGE_MAX + THRU_MAX
+    // `StepAction` disc(1) + largest payload (`MidiCc` cc(1)+value(1) = 2).
+    const STEP_MAX: usize = 1 + 2;
+    const CYCLE_MAX: usize = (1 /* steps len */ + MAX_STEPS * STEP_MAX) + 1 /* CycleLong */;
+    const CYCLES_MAX: usize = 1 /* pool len */ + MAX_CYCLES * CYCLE_MAX;
+    1 /* pages Vec length varint */ + MAX_PAGES * PAGE_MAX + THRU_MAX + CYCLES_MAX
 };
 
 /// An owned button label.
@@ -426,19 +526,32 @@ impl ThruRoutes {
     };
 }
 
-/// A complete user configuration: an ordered list of owned pages plus the
-/// device-global MIDI-thru routing.
+/// A multi-state cycle — owned (runtime/user) form of [`StaticCycleDef`]. Lives
+/// in [`RuntimeConfig::cycles`]; buttons reference it by index via
+/// [`Action::Cycle`]. A short press advances through `steps` (wrapping); the
+/// long press follows `long`.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CycleDef {
+    pub steps: heapless::Vec<StepAction, MAX_STEPS>,
+    pub long: CycleLong,
+}
+
+/// A complete user configuration: an ordered list of owned pages, the
+/// device-global MIDI-thru routing, and the shared cycle pool.
 ///
-/// NOTE: serde/postcard serializes fields in declaration order — `midi_thru` is
-/// **appended** after `pages`. Adding a struct field is a breaking wire change
-/// (an older blob lacks the trailing bytes and fails to deserialize, falling
-/// back to the default on upgrade), so [`crate::proto::PROTO_VERSION`] is bumped
-/// alongside it. Only append; never reorder.
+/// NOTE: serde/postcard serializes fields in declaration order. New fields are
+/// **appended** (`midi_thru` after `pages`, then `cycles`). Adding a field is a
+/// breaking wire change (an older blob lacks the trailing bytes and fails to
+/// deserialize, falling back to the default on upgrade), so
+/// [`crate::proto::PROTO_VERSION`] is bumped alongside it. Only append; never
+/// reorder.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeConfig {
     pub pages: heapless::Vec<OwnedPage, MAX_PAGES>,
     /// Device-global MIDI-thru routing, applied by [`crate::midi::mux`].
     pub midi_thru: ThruRoutes,
+    /// Shared cycle pool, referenced by [`Action::Cycle`] (index).
+    pub cycles: heapless::Vec<CycleDef, MAX_CYCLES>,
 }
 
 /// Copy `s` into a fixed-cap string, truncating at a char boundary if it
@@ -474,9 +587,25 @@ impl OwnedPage {
     }
 }
 
+impl CycleDef {
+    fn from_static(c: &StaticCycleDef) -> Self {
+        let mut steps = heapless::Vec::new();
+        for s in c.steps {
+            if steps.push(*s).is_err() {
+                break; // steps beyond MAX_STEPS are dropped
+            }
+        }
+        Self {
+            steps,
+            long: c.long,
+        }
+    }
+}
+
 impl RuntimeConfig {
     /// Build an owned config from a baked [`Config`], cloning the `'static`
-    /// strings into owned ones. Pages beyond [`MAX_PAGES`] are dropped.
+    /// strings into owned ones. Pages beyond [`MAX_PAGES`] (and cycles beyond
+    /// [`MAX_CYCLES`]) are dropped.
     pub fn from_static(c: &Config) -> Self {
         let mut pages = heapless::Vec::new();
         for p in c.pages {
@@ -484,9 +613,16 @@ impl RuntimeConfig {
                 break;
             }
         }
+        let mut cycles = heapless::Vec::new();
+        for cy in c.cycles {
+            if cycles.push(CycleDef::from_static(cy)).is_err() {
+                break;
+            }
+        }
         Self {
             pages,
             midi_thru: ThruRoutes::NONE,
+            cycles,
         }
     }
 
@@ -504,6 +640,13 @@ impl RuntimeConfig {
     pub fn page(&self, index: usize) -> &OwnedPage {
         let last = self.pages.len().saturating_sub(1);
         &self.pages[index.min(last)]
+    }
+
+    /// Borrow a cycle definition by index ([`Action::Cycle`]), or `None` if the
+    /// index is out of range (an unbound / malformed reference — the router
+    /// treats it as a no-op).
+    pub fn cycle(&self, index: u8) -> Option<&CycleDef> {
+        self.cycles.get(index as usize)
     }
 }
 

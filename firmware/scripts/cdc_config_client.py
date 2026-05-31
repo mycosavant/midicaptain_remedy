@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 3  # v3: each button gained the `group` field (radio groups); v2 added midi_thru
+PROTO_VERSION = 4  # v4: RuntimeConfig gained the `cycles` pool + Action::Cycle; v3 added group; v2 midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -48,6 +48,8 @@ ERR_NAMES = {1: "BadCommand", 2: "BadPayload", 3: "StoreFailed"}
 PAGE_BUTTONS = 10  # config::PAGE_BUTTONS — every page has exactly this many
 # config::ThruRoutes fields, in serialized (declaration) order.
 THRU_FIELDS = ("usb_to_din", "din_to_usb", "din_to_din", "usb_to_usb")
+# config::CycleLong variant order (serde keys by position).
+CYCLE_LONG = ("none", "reset", "reverse")
 
 
 # ── wire codec (mirror of src/proto.rs) ─────────────────────────────────────
@@ -199,6 +201,8 @@ def _dec_action(r: _Reader) -> dict:
     if disc == 8:  # ProgramChangeStep(i8) — postcard encodes i8 as one raw byte
         b = r.u8()
         return {"type": "pc_step", "step": b - 256 if b >= 128 else b}
+    if disc == 9:  # Cycle(u8) — index into the config's cycle pool
+        return {"type": "cycle", "index": r.u8()}
     raise ValueError(f"unknown Action discriminant {disc}")
 
 
@@ -228,7 +232,32 @@ def _enc_action(a: dict) -> bytes:
         return _varint_enc(7)
     if t == "pc_step":
         return _varint_enc(8) + bytes([a["step"] & 0xFF])  # i8 as one raw byte
+    if t == "cycle":
+        return _varint_enc(9) + bytes([a["index"]])
     raise ValueError(f"unknown action type {t!r}")
+
+
+# config::StepAction — the flat action subset a cycle step can hold.
+def _dec_step(r: _Reader) -> dict:
+    disc = r.varint()
+    if disc == 0:  # MidiCc { cc, value } (a fixed u8 value, not CcValue)
+        return {"type": "cc", "cc": r.u8(), "value": r.u8()}
+    if disc == 1:  # ProgramChange { program }
+        return {"type": "pc", "program": r.u8()}
+    if disc == 2:  # Sysex(SysexCmd)
+        return {"type": "sysex", "cmd": _SYSEX[r.varint()], "arg": r.u8()}
+    raise ValueError(f"unknown StepAction discriminant {disc}")
+
+
+def _enc_step(s: dict) -> bytes:
+    t = s["type"]
+    if t == "cc":
+        return _varint_enc(0) + bytes([s["cc"], int(s["value"])])
+    if t == "pc":
+        return _varint_enc(1) + bytes([s["program"]])
+    if t == "sysex":
+        return _varint_enc(2) + _varint_enc(_SYSEX.index(s["cmd"])) + bytes([s["arg"]])
+    raise ValueError(f"unknown step type {t!r}")
 
 
 def decode_config(blob: bytes) -> dict:
@@ -253,9 +282,15 @@ def decode_config(blob: bytes) -> dict:
         pages.append({"name": name, "buttons": buttons})
     # ThruRoutes: 4 bools, appended after pages (RuntimeConfig field order).
     midi_thru = {field: bool(r.u8()) for field in THRU_FIELDS}
+    # Cycle pool: Vec<CycleDef>, appended after midi_thru.
+    cycles = []
+    for _ in range(r.varint()):
+        steps = [_dec_step(r) for _ in range(r.varint())]
+        long = CYCLE_LONG[r.varint()]
+        cycles.append({"steps": steps, "long": long})
     if r.i != len(blob):
         raise ValueError(f"trailing bytes ({len(blob) - r.i}) after decode")
-    return {"pages": pages, "midi_thru": midi_thru}
+    return {"pages": pages, "midi_thru": midi_thru, "cycles": cycles}
 
 
 def encode_config(cfg: dict) -> bytes:
@@ -281,6 +316,15 @@ def encode_config(cfg: dict) -> bytes:
     thru = cfg.get("midi_thru", {})
     for field in THRU_FIELDS:
         out.append(1 if thru.get(field) else 0)
+    # Cycle pool after midi_thru. Tolerate configs without a "cycles" key.
+    cycles = cfg.get("cycles", [])
+    out += _varint_enc(len(cycles))
+    for c in cycles:
+        steps = c["steps"]
+        out += _varint_enc(len(steps))
+        for s in steps:
+            out += _enc_step(s)
+        out += _varint_enc(CYCLE_LONG.index(c.get("long", "none")))
     return bytes(out)
 
 
@@ -339,6 +383,11 @@ def _print_config(cfg: dict) -> None:
     thru = cfg.get("midi_thru", {})
     on = [f for f in THRU_FIELDS if thru.get(f)]
     print(f"  midi_thru: {', '.join(on) if on else 'none'}")
+    for k, c in enumerate(cfg.get("cycles", [])):
+        long = "" if c["long"] == "none" else f"  long={c['long']}"
+        print(f"  cycle {k}: {len(c['steps'])} step(s){long}")
+        for s in c["steps"]:
+            print(f"      {s}")
 
 
 def cmd_hello(ser, _args) -> None:

@@ -283,6 +283,19 @@ const _: () = assert!(
      scalar settings reads would fault with BufferTooSmall after a config store"
 );
 
+// `store_config` serializes the config into the *first half* of the caller's
+// scratch ([`CONFIG_SCRATCH_LEN`]), so the worst-case blob must fit in half of
+// it. This also keeps one map item comfortably under a single 4 KB flash erase
+// sector — `sequential-storage`'s per-item ceiling. If a config cap
+// (`MAX_PAGES` / `MAX_CYCLES` / `MAX_STEPS` / a label cap) ever grows the blob
+// past this, the build fails here instead of `store_config` failing at runtime.
+const _: () = assert!(
+    2 * config::MAX_SERIALIZED_LEN <= CONFIG_SCRATCH_LEN,
+    "config::MAX_SERIALIZED_LEN exceeds half the config scratch buffer; \
+     store_config could not serialize the worst-case config (raise CONFIG_SCRATCH_LEN \
+     only if it still fits a 4 KB flash sector, else reduce a config cap)"
+);
+
 impl Storage {
     /// The largest item the key-value map can hold: a 1-byte [`u8`] key plus the
     /// largest serialized config value ([`config::MAX_SERIALIZED_LEN`]). The

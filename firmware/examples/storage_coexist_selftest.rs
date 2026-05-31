@@ -41,7 +41,9 @@ use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use heapless::Vec;
-use midicaptain_firmware::config::{self, Action, CcValue, OwnedButton, OwnedPage, RuntimeConfig};
+use midicaptain_firmware::config::{
+    self, Action, CcValue, CycleDef, CycleLong, OwnedButton, OwnedPage, RuntimeConfig, StepAction,
+};
 use midicaptain_firmware::storage::{self, PedalCal, Settings, Storage};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -112,9 +114,25 @@ fn max_config() -> RuntimeConfig {
     for _ in 0..config::MAX_PAGES {
         let _ = pages.push(page.clone());
     }
+    // A full cycle pool: MAX_CYCLES cycles, each filled to MAX_STEPS with the
+    // largest StepAction — so the blob hits MAX_SERIALIZED_LEN, not just the
+    // pages part.
+    let mut steps: Vec<StepAction, { config::MAX_STEPS }> = Vec::new();
+    for _ in 0..config::MAX_STEPS {
+        let _ = steps.push(StepAction::MidiCc { cc: 127, value: 127 });
+    }
+    let cyc = CycleDef {
+        steps,
+        long: CycleLong::Reverse,
+    };
+    let mut cycles: Vec<CycleDef, { config::MAX_CYCLES }> = Vec::new();
+    for _ in 0..config::MAX_CYCLES {
+        let _ = cycles.push(cyc.clone());
+    }
     RuntimeConfig {
         pages,
         midi_thru: config::ThruRoutes::NONE,
+        cycles,
     }
 }
 
