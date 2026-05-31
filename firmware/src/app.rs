@@ -21,7 +21,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Duration, Instant};
 
-use crate::config::{self, Action, CcValue, RuntimeConfig, SysexCmd};
+use crate::config::{self, Action, CcValue, CycleLong, RuntimeConfig, StepAction, SysexCmd};
 use crate::events::{
     ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd, MidiRx,
 };
@@ -126,6 +126,16 @@ enum Mode {
     Tuner,
 }
 
+/// Direction a cycle button's press moves through its states.
+enum CycleDir {
+    /// Short press: next state (wraps).
+    Advance,
+    /// Long press with [`CycleLong::Reverse`]: previous state (wraps).
+    Reverse,
+    /// Long press with [`CycleLong::Reset`]: back to the first state.
+    Reset,
+}
+
 /// The event router + application state.
 pub struct Router {
     config: RuntimeConfig,
@@ -156,6 +166,11 @@ pub struct Router {
     /// change + config apply (like [`Self::toggles`]). Local-only — not driven
     /// by inbound MIDI.
     group_sel: [Option<u8>; config::MAX_GROUPS],
+    /// Per-page cycle position, indexed by button scan-index: the state a
+    /// [`Action::Cycle`] button last landed on, or `None` (not yet pressed).
+    /// Cleared on page change + config apply, like [`Self::toggles`]. Local —
+    /// not driven by inbound MIDI.
+    cycle_active: [Option<u8>; config::PAGE_BUTTONS],
     /// Press timestamps for footswitch long-press detection, per switch index.
     press_at: [Option<Instant>; buttons::COUNT],
     /// For [`CcValue::Momentary`]: the CC a held switch is driving (sent `127`
@@ -196,6 +211,7 @@ impl Router {
             current_program: 0,
             toggles: [false; 128],
             group_sel: [None; config::MAX_GROUPS],
+            cycle_active: [None; config::PAGE_BUTTONS],
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
@@ -226,7 +242,15 @@ impl Router {
             switches: [config::color::OFF; pins::Switch::COUNT],
         };
         for (bi, btn) in page.buttons.iter().enumerate() {
-            let base = if let Some(slot) = group_slot(btn.group) {
+            let base = if let Action::Cycle(_) = btn.on_press {
+                // Cycle button: full on any non-base state, dim on the base state
+                // (index 0) or before the first press. Highest LED precedence.
+                if matches!(self.cycle_active[bi], Some(p) if p != 0) {
+                    btn.color
+                } else {
+                    leds::idle_dim(btn.color)
+                }
+            } else if let Some(slot) = group_slot(btn.group) {
                 // Radio/select group: the selected member is full, the rest dim.
                 // Takes precedence over toggle feedback.
                 if self.group_sel[slot] == Some(bi as u8) {
@@ -270,6 +294,7 @@ impl Router {
         self.page = page.min(self.config.page_count().saturating_sub(1));
         self.toggles = [false; 128];
         self.group_sel = [None; config::MAX_GROUPS];
+        self.cycle_active = [None; config::PAGE_BUTTONS];
         self.refresh_page();
     }
 
@@ -327,17 +352,38 @@ impl Router {
             .take()
             .map(|t| Instant::now().saturating_duration_since(t) >= LONG_PRESS)
             .unwrap_or(false);
-        // Pick the action and clone the label out of the (immutably-borrowed)
-        // config *before* `dispatch` takes `&mut self` — the owned label means
-        // no config borrow is held across the mutable call.
-        let (action, label, group) = {
+        // Read the button's bindings + clone its label out of the
+        // (immutably-borrowed) config *before* any `&mut self` call — the owned
+        // label means no config borrow is held across the mutable dispatch.
+        let (on_press, on_long_press, label, group) = {
             let btn = &self.current_page().buttons[idx];
-            let action = if long && btn.on_long_press != Action::None {
-                btn.on_long_press
+            (btn.on_press, btn.on_long_press, btn.label.clone(), btn.group)
+        };
+
+        // Cycle buttons are special: the short press advances the cycle; the
+        // long press follows the cycle's `CycleLong` (Reset/Reverse), or — when
+        // the cycle doesn't claim it (`None`, or a bad index) — falls through to
+        // the button's own `on_long_press`.
+        if let Action::Cycle(ci) = on_press {
+            if !long {
+                self.cycle_step(idx, ci, CycleDir::Advance, label);
             } else {
-                btn.on_press
-            };
-            (action, btn.label.clone(), btn.group)
+                match self.config.cycle(ci).map(|c| c.long) {
+                    Some(CycleLong::Reset) => self.cycle_step(idx, ci, CycleDir::Reset, label),
+                    Some(CycleLong::Reverse) => self.cycle_step(idx, ci, CycleDir::Reverse, label),
+                    _ if on_long_press != Action::None => self.dispatch(on_long_press, label),
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        // Non-cycle: pick long- vs short-press action (dispatching on release is
+        // what lets a single switch carry both).
+        let action = if long && on_long_press != Action::None {
+            on_long_press
+        } else {
+            on_press
         };
         // A short press on a grouped button makes it that group's selection
         // (radio behaviour), deselecting the previous member. Recorded before
@@ -351,6 +397,54 @@ impl Router {
             }
         }
         self.dispatch(action, label);
+    }
+
+    /// Advance / reverse / reset a cycle button's state and emit the landed
+    /// step. `idx` is a validated switch index; `ci` the cycle index. An empty
+    /// or out-of-range cycle is a no-op.
+    fn cycle_step(&mut self, idx: usize, ci: u8, dir: CycleDir, label: config::Label) {
+        let (next, step) = {
+            let cyc = match self.config.cycle(ci) {
+                Some(c) if !c.steps.is_empty() => c,
+                _ => return,
+            };
+            let len = cyc.steps.len();
+            let next = match dir {
+                CycleDir::Advance => self.cycle_active[idx].map_or(0, |p| ((p as usize + 1) % len) as u8),
+                CycleDir::Reverse => {
+                    self.cycle_active[idx].map_or(0, |p| ((p as usize + len - 1) % len) as u8)
+                }
+                CycleDir::Reset => 0,
+            };
+            (next, cyc.steps[next as usize])
+        };
+        self.cycle_active[idx] = Some(next);
+        self.dispatch_step(step, label);
+        self.refresh_leds();
+    }
+
+    /// Emit one cycle step (the concrete MIDI it represents) + announce it.
+    fn dispatch_step(&mut self, step: StepAction, label: config::Label) {
+        let channel = self.wire_channel();
+        match step {
+            StepAction::MidiCc { cc, value } => {
+                let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
+                self.announce(label);
+            }
+            StepAction::ProgramChange { program } => {
+                self.current_program = program;
+                let _ = self
+                    .midi_cmd
+                    .try_send(MidiCmd::ProgramChange { channel, program });
+                self.announce(label);
+            }
+            StepAction::Sysex(cmd) => {
+                if let Ok(sx) = build_sysex(cmd) {
+                    let _ = self.sysex_out.try_send(sx);
+                }
+                self.announce(label);
+            }
+        }
     }
 
     fn dispatch(&mut self, action: Action, label: config::Label) {
@@ -411,6 +505,10 @@ impl Router {
                     .try_send(MidiCmd::ProgramChange { channel, program });
                 self.announce(label);
             }
+            // Cycles need the button index for per-button position, so they are
+            // handled in `on_button_perf` (the only place an `Action::Cycle` is
+            // meaningful). In any other slot it is inert.
+            Action::Cycle(_) => {}
         }
     }
 
@@ -655,6 +753,7 @@ impl Router {
                 self.page = 0;
                 self.toggles = [false; 128];
                 self.group_sel = [None; config::MAX_GROUPS];
+                self.cycle_active = [None; config::PAGE_BUTTONS];
                 self.refresh_page();
                 defmt::info!("router: config applied ({} page(s))", self.config.page_count());
                 ConfigResp::Ok
