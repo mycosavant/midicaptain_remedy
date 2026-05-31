@@ -23,7 +23,8 @@ use embassy_time::{Duration, Instant};
 
 use crate::config::{self, Action, CcValue, CycleLong, RuntimeConfig, StepAction, SysexCmd};
 use crate::events::{
-    ButtonEvent, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd, MidiRx,
+    ButtonEvent, Cell, CellState, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd,
+    MidiRx,
 };
 use crate::hal::{buttons, encoder, expression, hid, leds};
 use crate::menu::{Menu, MenuOutcome};
@@ -281,15 +282,75 @@ impl Router {
         let _ = self.leds.try_send(frame);
     }
 
-    /// Paint the page name/position to the display and refresh the LEDs.
-    fn refresh_page(&self) {
+    /// Presentation state for one button cell, mirroring the LED feedback
+    /// precedence in [`Self::refresh_leds`] (cycle > group > toggle). Display-
+    /// only: the `PageGrid` widget renders it. Kept as a separate read (rather
+    /// than refactoring `refresh_leds` to share it) so the validated LED
+    /// behaviour is untouched — the two are deliberately kept in lockstep here.
+    fn cell_state(&self, bi: usize) -> CellState {
+        let btn = &self.current_page().buttons[bi];
+        // Held momentary takes visual priority (it's the live edge).
+        if self.momentary_active[bi].is_some() {
+            return CellState::Momentary(true);
+        }
+        if let Action::Cycle(ci) = btn.on_press {
+            // A valid, non-empty cycle shows "pos/len" (pos 1-based; 0 = unset).
+            if let Some(len) = self.config.cycle(ci).map(|c| c.steps.len()).filter(|&l| l > 0) {
+                let pos = self.cycle_active[bi].map_or(0, |p| p + 1);
+                return CellState::Cycle { pos, len: len as u8 };
+            }
+            // Bad/empty cycle index → inert, drawn as a plain bound button.
+            return CellState::Plain;
+        }
+        if let Some(slot) = group_slot(btn.group) {
+            return CellState::Radio(self.group_sel[slot] == Some(bi as u8));
+        }
+        if let Some(cc) = btn.on_press.toggle_cc() {
+            return CellState::Toggle(self.toggles[cc as usize]);
+        }
+        if matches!(btn.on_press, Action::MidiCc { value: CcValue::Momentary, .. }) {
+            return CellState::Momentary(false);
+        }
+        if matches!(btn.on_press, Action::None) && matches!(btn.on_long_press, Action::None) {
+            return CellState::Empty;
+        }
+        CellState::Plain
+    }
+
+    /// Send the performance-screen snapshot (one [`Cell`] per footswitch) to the
+    /// display. No-op outside [`Mode::Performance`] so a background CC-sync /
+    /// LED refresh can't clobber the menu or tuner screen.
+    fn refresh_view(&self) {
+        if !matches!(self.mode, Mode::Performance) {
+            return;
+        }
         let page = self.current_page();
+        let cells: [Cell; config::PAGE_BUTTONS] = core::array::from_fn(|bi| Cell {
+            label: page.buttons[bi].label.clone(),
+            color: page.buttons[bi].color,
+            state: self.cell_state(bi),
+        });
         let _ = self.display.try_send(DisplayCmd::Page {
             name: page.name.clone(),
             index: self.page as u8 + 1,
             total: self.config.page_count() as u8,
+            program: self.current_program,
+            cells,
         });
+    }
+
+    /// Repaint everything the live state drives: the LED frame and (in
+    /// performance mode) the page-grid snapshot. The single call to make after
+    /// any state change.
+    fn refresh(&self) {
         self.refresh_leds();
+        self.refresh_view();
+    }
+
+    /// Paint the active page (grid + LEDs). Used on every transition into
+    /// performance mode and on the initial boot paint.
+    fn refresh_page(&self) {
+        self.refresh();
     }
 
     /// Switch pages, clearing per-page toggle + group state (CLAUDE.md) and
@@ -337,8 +398,10 @@ impl Router {
             if let Action::MidiCc { cc, value: CcValue::Momentary } =
                 self.current_page().buttons[idx].on_press
             {
-                self.send_momentary(idx, cc, true);
+                // Mark held *before* refreshing so the cell shows `Momentary(true)`.
                 self.momentary_active[idx] = Some(cc);
+                self.send_cc(cc, 127);
+                self.refresh();
             }
             self.press_at[idx] = Some(Instant::now());
             return;
@@ -347,7 +410,8 @@ impl Router {
         // the long/short dispatch entirely.
         if let Some(cc) = self.momentary_active[idx].take() {
             self.press_at[idx] = None;
-            self.send_momentary(idx, cc, false);
+            self.send_cc(cc, 0);
+            self.refresh(); // cell reverts to idle now that it's released
             return;
         }
         // Otherwise: pick long- vs short-press by held duration. Dispatching
@@ -370,12 +434,12 @@ impl Router {
         // the button's own `on_long_press`.
         if let Action::Cycle(ci) = on_press {
             if !long {
-                self.cycle_step(idx, ci, CycleDir::Advance, label);
+                self.cycle_step(idx, ci, CycleDir::Advance);
             } else {
                 match self.config.cycle(ci).map(|c| c.long) {
-                    Some(CycleLong::Reset) => self.cycle_step(idx, ci, CycleDir::Reset, label),
-                    Some(CycleLong::Reverse) => self.cycle_step(idx, ci, CycleDir::Reverse, label),
-                    _ if on_long_press != Action::None => self.dispatch(on_long_press, label),
+                    Some(CycleLong::Reset) => self.cycle_step(idx, ci, CycleDir::Reset),
+                    Some(CycleLong::Reverse) => self.cycle_step(idx, ci, CycleDir::Reverse),
+                    _ if on_long_press != Action::None => self.act(idx, on_long_press, label),
                     _ => {}
                 }
             }
@@ -391,22 +455,34 @@ impl Router {
         };
         // A short press on a grouped button makes it that group's selection
         // (radio behaviour), deselecting the previous member. Recorded before
-        // dispatch so the LED repaint reflects the new selection no matter what
-        // the action does. Long-presses don't latch — they fire `on_long_press`
-        // (e.g. tuner / page nav) without changing the group.
+        // dispatch so the repaint (in `act`) reflects the new selection no matter
+        // what the action does. Long-presses don't latch — they fire
+        // `on_long_press` (e.g. tuner / page nav) without changing the group.
         if !long {
             if let Some(slot) = group_slot(group) {
                 self.group_sel[slot] = Some(idx as u8);
-                self.refresh_leds();
             }
         }
-        self.dispatch(action, label);
+        self.act(idx, action, label);
+    }
+
+    /// Dispatch a button action, then give feedback: always repaint (LEDs +
+    /// grid header/state), and for a non-latching action (Program Change /
+    /// SysEx / HID / PC-step / fixed CC) additionally flash the pressed cell —
+    /// it has no persistent [`CellState`] of its own. `idx` is a validated
+    /// switch index.
+    fn act(&mut self, idx: usize, action: Action, label: config::Label) {
+        let transient = self.dispatch(action, label);
+        self.refresh();
+        if transient {
+            let _ = self.display.try_send(DisplayCmd::Flash { index: idx as u8 });
+        }
     }
 
     /// Advance / reverse / reset a cycle button's state and emit the landed
     /// step. `idx` is a validated switch index; `ci` the cycle index. An empty
     /// or out-of-range cycle is a no-op.
-    fn cycle_step(&mut self, idx: usize, ci: u8, dir: CycleDir, label: config::Label) {
+    fn cycle_step(&mut self, idx: usize, ci: u8, dir: CycleDir) {
         let (next, step) = {
             let cyc = match self.config.cycle(ci) {
                 Some(c) if !c.steps.is_empty() => c,
@@ -423,126 +499,122 @@ impl Router {
             (next, cyc.steps[next as usize])
         };
         self.cycle_active[idx] = Some(next);
-        self.dispatch_step(step, label);
-        self.refresh_leds();
+        self.dispatch_step(step);
+        // A cycle is latched: the cell shows the new "pos/len", so no flash.
+        self.refresh();
     }
 
-    /// Emit one cycle step (the concrete MIDI it represents) + announce it.
-    fn dispatch_step(&mut self, step: StepAction, label: config::Label) {
+    /// Emit one cycle step — the concrete MIDI it represents. Feedback (the
+    /// cell's `pos/len`) is repainted by the caller via [`Self::refresh`].
+    fn dispatch_step(&mut self, step: StepAction) {
         let channel = self.wire_channel();
         match step {
             StepAction::MidiCc { cc, value } => {
                 let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
-                self.announce(label);
             }
             StepAction::ProgramChange { program } => {
                 self.current_program = program;
                 let _ = self
                     .midi_cmd
                     .try_send(MidiCmd::ProgramChange { channel, program });
-                self.announce(label);
             }
             StepAction::Sysex(cmd) => {
                 if let Ok(sx) = build_sysex(cmd) {
                     let _ = self.sysex_out.try_send(sx);
                 }
-                self.announce(label);
             }
         }
     }
 
-    fn dispatch(&mut self, action: Action, label: config::Label) {
+    /// Perform one action's side effects (MIDI + state mutation). Returns
+    /// `true` when the action is **transient** — it has no persistent
+    /// [`CellState`], so the caller ([`Self::act`]) flashes the pressed cell.
+    /// Display/LED repainting is the caller's job (`act` → `refresh`); this
+    /// method only mutates state and sends MIDI. `_label` is retained for a
+    /// future banner but unused now that feedback is the grid cell.
+    fn dispatch(&mut self, action: Action, _label: config::Label) -> bool {
         let channel = self.wire_channel();
         match action {
-            Action::None => {}
-            Action::MidiCc { cc, value } => {
-                let (v, toggle, on) = match value {
-                    CcValue::Fixed(v) => (v, false, false),
-                    CcValue::Toggle => {
-                        let on = !self.toggles[cc as usize];
-                        self.toggles[cc as usize] = on;
-                        (if on { 127 } else { 0 }, true, on)
-                    }
-                    // Momentary is edge-driven in `on_button_perf` (press=127,
-                    // release=0). Reaching dispatch means it was mapped without a
-                    // release edge (e.g. a long-press) — do nothing rather than
-                    // leave the CC stuck high.
-                    CcValue::Momentary => return,
-                };
-                let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
-                let _ = self.display.try_send(DisplayCmd::Action { label, toggle, on });
-                if toggle {
-                    self.refresh_leds();
+            Action::None => false,
+            Action::MidiCc { cc, value } => match value {
+                CcValue::Fixed(v) => {
+                    let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
+                    true
                 }
-            }
+                CcValue::Toggle => {
+                    let on = !self.toggles[cc as usize];
+                    self.toggles[cc as usize] = on;
+                    let _ = self
+                        .midi_cmd
+                        .try_send(MidiCmd::ControlChange { channel, cc, value: if on { 127 } else { 0 } });
+                    false // latched: the cell shows on/off
+                }
+                // Momentary is edge-driven in `on_button_perf` (press=127,
+                // release=0). Reaching dispatch means it was mapped without a
+                // release edge (e.g. a long-press) — do nothing rather than
+                // leave the CC stuck high.
+                CcValue::Momentary => false,
+            },
             Action::ProgramChange { program } => {
                 self.current_program = program;
                 let _ = self
                     .midi_cmd
                     .try_send(MidiCmd::ProgramChange { channel, program });
-                self.announce(label);
+                true
             }
             Action::Sysex(cmd) => {
                 if let Ok(sx) = build_sysex(cmd) {
                     let _ = self.sysex_out.try_send(sx);
                 }
-                self.announce(label);
+                true
             }
             Action::PageNext => {
                 let n = self.config.page_count();
                 self.change_page((self.page + 1) % n);
+                false
             }
             Action::PagePrev => {
                 let n = self.config.page_count();
                 self.change_page((self.page + n - 1) % n);
+                false
             }
-            Action::PageChange(p) => self.change_page(p as usize),
+            Action::PageChange(p) => {
+                self.change_page(p as usize);
+                false
+            }
             // `dispatch` only runs in performance mode, so this always *enters*
             // the tuner; leaving is handled by the footswitch/encoder in
             // `Mode::Tuner` (see `on_button` / `on_encoder`).
-            Action::TunerToggle => self.enter_tuner(),
+            Action::TunerToggle => {
+                self.enter_tuner();
+                false
+            }
             Action::ProgramChangeStep(step) => {
                 let program = (self.current_program as i16 + step as i16).clamp(0, 127) as u8;
                 self.current_program = program;
                 let _ = self
                     .midi_cmd
                     .try_send(MidiCmd::ProgramChange { channel, program });
-                self.announce(label);
+                true
             }
             // Cycles need the button index for per-button position, so they are
             // handled in `on_button_perf` (the only place an `Action::Cycle` is
             // meaningful). In any other slot it is inert.
-            Action::Cycle(_) => {}
+            Action::Cycle(_) => false,
             // Hand the HID report to the HID task, which writes the press +
             // release tap. Fire-and-forget (no toggle/selection state); a full
             // queue drops the tap rather than blocking the router.
             Action::Hid(report) => {
                 let _ = self.hid.try_send(report);
-                self.announce(label);
+                true
             }
         }
     }
 
-    /// Send a momentary CC edge (`127` on press, `0` on release) and reflect it
-    /// on the status line. `idx` is a validated switch index.
-    fn send_momentary(&self, idx: usize, cc: u8, on: bool) {
+    /// Send a Control Change on the global MIDI channel.
+    fn send_cc(&self, cc: u8, value: u8) {
         let channel = self.wire_channel();
-        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-            channel,
-            cc,
-            value: if on { 127 } else { 0 },
-        });
-        let label = self.current_page().buttons[idx].label.clone();
-        let _ = self.display.try_send(DisplayCmd::Action { label, toggle: true, on });
-    }
-
-    /// Show a non-toggle action's label on the display.
-    fn announce(&self, label: config::Label) {
-        let _ = self.display.try_send(DisplayCmd::Action {
-            label,
-            toggle: false,
-            on: false,
-        });
+        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
     }
 
     async fn on_encoder(&mut self, ev: EncoderEvent) {
@@ -614,7 +686,7 @@ impl Router {
             let on = value > 63;
             if self.toggles[cc as usize] != on {
                 self.toggles[cc as usize] = on;
-                self.refresh_leds();
+                self.refresh(); // update LEDs + (in performance) the toggle cell
             }
         }
     }

@@ -29,6 +29,7 @@ use core::fmt::Write as _;
 
 use defmt::{info, warn};
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_rp::adc::{Adc, Config as AdcConfig, InterruptHandler as AdcIrq};
 use embassy_rp::bind_interrupts;
 use embassy_rp::dma::InterruptHandler as DmaIrq;
@@ -64,7 +65,7 @@ use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
 use midicaptain_firmware::proto;
 use midicaptain_firmware::storage::{self, Storage};
-use midicaptain_firmware::ui::{Palette, TextPanel, TunerView, Widget};
+use midicaptain_firmware::ui::{PageGrid, Palette, TextPanel, TunerView, Widget};
 use {defmt_rtt as _, panic_probe as _};
 
 type UsbDriver = Driver<'static, USB>;
@@ -543,23 +544,34 @@ async fn write_cdc_frame(cdc: &mut CdcAcmClass<'static, UsbDriver>, frame: &[u8]
     }
 }
 
-/// Which on-screen layout the display task last painted. The normal layout
-/// (title + status panels) and the tuner layout occupy different regions, so a
-/// switch between them wipes the screen first — otherwise the old layout's
-/// pixels would linger around the new one.
+/// Which on-screen layout the display task last painted. Each layout occupies
+/// different regions, so a switch between them wipes the screen first —
+/// otherwise the old layout's pixels would linger around the new one.
+/// `Grid` is the performance page grid; `Text` is the settings menu /
+/// calibration wizard / boot splash; `Tuner` is the chromatic tuner.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
-    Normal,
+    Grid,
+    Text,
     Tuner,
 }
 
-/// Sole owner of the ST7789. Renders either the normal layout — a title bar
-/// (active page name) and a status panel (page position / latest action /
-/// menu) — or the tuner layout, switching on each [`DisplayCmd`].
+/// How long a transient cell-flash stays lit before the cell is restored.
+const FLASH_MS: u64 = 140;
+
+/// Sole owner of the ST7789. Renders the performance [`PageGrid`], the tuner,
+/// or the menu/calibration text layout, switching on each [`DisplayCmd`]. A
+/// [`DisplayCmd::Flash`] briefly highlights one grid cell; a short timer
+/// restores it without blocking the command stream.
 #[embassy_executor::task]
 async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, commands: app::DisplayReceiver) {
     let _ = display.clear(Palette::BLACK.to_rgb565());
 
+    // Performance screen.
+    let mut grid = PageGrid::new();
+    // Tuner screen.
+    let mut tuner = TunerView::new(&FONT_10X20);
+    // Text screen (menu / calibration / boot splash).
     let mut title: TextPanel<16> = TextPanel::new(
         Point::new(8, 8),
         Size::new(224, 56),
@@ -582,48 +594,74 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
     status.set_text("booting...");
     let _ = status.render(&mut display);
 
-    let mut tuner = TunerView::new(&FONT_10X20);
-    let mut screen = Screen::Normal;
+    // Start on the text splash; the router's first `Page` switches to the grid.
+    let mut screen = Screen::Text;
+    // Pending cell-flash: which cell is highlighted, and when to restore it.
+    let mut flash_idx: Option<usize> = None;
+    let mut flash_deadline: Option<embassy_time::Instant> = None;
 
     loop {
-        let cmd = commands.receive().await;
+        // Wait for the next render command, or for a pending cell-flash to
+        // expire (whichever first). The timeout only arms while a cell is
+        // highlighted, so the common case is a plain channel receive.
+        let cmd = match flash_deadline {
+            Some(deadline) => match select(commands.receive(), embassy_time::Timer::at(deadline)).await {
+                Either::First(cmd) => cmd,
+                Either::Second(_) => {
+                    if let Some(i) = flash_idx.take() {
+                        grid.unflash(i);
+                        if screen == Screen::Grid {
+                            let _ = grid.render(&mut display);
+                        }
+                    }
+                    flash_deadline = None;
+                    continue;
+                }
+            },
+            None => commands.receive().await,
+        };
 
-        // Layout transition: wipe the screen and force the incoming layout's
-        // widgets to repaint from scratch.
+        // Pick the layout this command wants. Page/Flash → grid; Menu/Cal →
+        // text; Tuner → tuner. A layout change wipes the screen and forces the
+        // incoming widgets to repaint from scratch.
         let want = match cmd {
             DisplayCmd::Tuner { .. } => Screen::Tuner,
-            _ => Screen::Normal,
+            DisplayCmd::Page { .. } | DisplayCmd::Flash { .. } => Screen::Grid,
+            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } => Screen::Text,
         };
         if want != screen {
             let _ = display.clear(Palette::BLACK.to_rgb565());
             match want {
-                Screen::Normal => {
+                Screen::Grid => grid.mark_dirty(),
+                Screen::Tuner => tuner.mark_dirty(),
+                Screen::Text => {
                     title.mark_dirty();
                     status.mark_dirty();
                 }
-                Screen::Tuner => tuner.mark_dirty(),
             }
+            // Leaving the grid abandons any in-flight flash.
+            flash_idx = None;
+            flash_deadline = None;
             screen = want;
         }
 
         match cmd {
-            DisplayCmd::Page { name, index, total } => {
-                title.set_text(&name);
-                let _ = title.render(&mut display);
-                let mut line: String<32> = String::new();
-                let _ = write!(line, "Page {}/{}", index, total);
-                status.set_text(&line);
-                let _ = status.render(&mut display);
+            DisplayCmd::Page { name, index, total, program, cells } => {
+                grid.set_snapshot(&name, index, total, program, cells);
+                let _ = grid.render(&mut display);
             }
-            DisplayCmd::Action { label, toggle, on } => {
-                let mut line: String<32> = String::new();
-                if toggle {
-                    let _ = write!(line, "{} {}", label.as_str(), if on { "ON" } else { "OFF" });
-                } else {
-                    let _ = write!(line, "{}", label.as_str());
+            DisplayCmd::Flash { index } => {
+                let i = index as usize;
+                // Restore any cell still flashing from a previous press first.
+                if let Some(prev) = flash_idx {
+                    if prev != i {
+                        grid.unflash(prev);
+                    }
                 }
-                status.set_text(&line);
-                let _ = status.render(&mut display);
+                grid.flash(i);
+                let _ = grid.render(&mut display);
+                flash_idx = Some(i);
+                flash_deadline = Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(FLASH_MS));
             }
             DisplayCmd::Menu { title: item, value, kind, editing } => {
                 title.set_text("SETTINGS");

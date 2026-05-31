@@ -23,12 +23,14 @@
 //!   instrument this directly with `defmt::info!`.
 
 pub mod element;
+pub mod page_grid;
 pub mod palette;
 pub mod text_panel;
 pub mod tuner;
 pub mod value_bar;
 
 pub use element::Widget;
+pub use page_grid::PageGrid;
 pub use palette::{Color, Palette};
 pub use text_panel::TextPanel;
 pub use tuner::TunerView;
