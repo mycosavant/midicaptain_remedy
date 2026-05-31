@@ -7,6 +7,10 @@
 //! smooths, maps through calibration to a 0..=127 value, and emits an
 //! [`ExprEvent`] only when that value *changes*.
 //!
+//! Each input gets a weak **pull-down** so an *unplugged* jack reads a stable
+//! `0` rather than floating and emitting phantom CCs — see
+//! [`ExpressionInputs::new`] for the full rationale.
+//!
 //! ## Ported behaviour
 //!
 //! This is the Rust port of `remedy/lib/hardware.py::ExpressionPedal` and
@@ -441,8 +445,22 @@ pub struct ExpressionInputs {
 
 impl ExpressionInputs {
     /// Bind the (already interrupt-configured) async ADC to the two pedal
-    /// pins. Pass `p.PIN_27` as `pedal0` and `p.PIN_28` as `pedal1`. The
-    /// pins are analog inputs, so no pull is applied.
+    /// pins. Pass `p.PIN_27` as `pedal0` and `p.PIN_28` as `pedal1`.
+    ///
+    /// A weak **pull-down** is applied to each input. The TRS jacks have no
+    /// external pull (`HARDWARE.md`), so an *unplugged* jack leaves the wiper
+    /// pin floating — it drifts across ADC steps and the sampler emits a slow
+    /// stream of phantom CCs at idle. The pull-down pins an open input to a
+    /// stable ~0 (heel) instead, so a disconnected pedal reads `0` once and
+    /// then stays silent. A *connected* pedal is unaffected at the endpoints
+    /// (the pot's source impedance → 0 at heel/toe, so it still reaches `0` and
+    /// `127`); only the mid-travel response of an unusually high-impedance pot
+    /// (>100 kΩ) sags slightly, which calibration + the response curve absorb.
+    ///
+    /// (The alternative — keeping `Pull::None` and rejecting drift with an
+    /// AC-coupled software baseline — was considered and rejected: once the
+    /// input can't float it has nothing to reject, and it would risk
+    /// under-reporting a slow, deliberate volume swell.)
     pub fn new(
         adc: Adc<'static, Async>,
         pedal0: Peri<'static, impl AdcPin + 'static>,
@@ -452,11 +470,11 @@ impl ExpressionInputs {
             adc,
             pedals: [
                 Pedal {
-                    ch: AdcChannel::new_pin(pedal0, Pull::None),
+                    ch: AdcChannel::new_pin(pedal0, Pull::Down),
                     proc: PedalProcessor::new(),
                 },
                 Pedal {
-                    ch: AdcChannel::new_pin(pedal1, Pull::None),
+                    ch: AdcChannel::new_pin(pedal1, Pull::Down),
                     proc: PedalProcessor::new(),
                 },
             ],
