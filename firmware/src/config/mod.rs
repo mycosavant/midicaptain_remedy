@@ -340,21 +340,10 @@ const PAGE_DEFAULT: Page = Page {
             on_long_press: Action::TunerToggle,
             group: 0,
         },
-        // UP/DOWN → PC on press, page nav on long-press.
-        ButtonConfig {
-            label: "BANK+",
-            color: color::CYAN,
-            on_press: Action::ProgramChange { program: 4 },
-            on_long_press: Action::PageNext,
-            group: 0,
-        },
-        ButtonConfig {
-            label: "BANK-",
-            color: color::CYAN,
-            on_press: Action::ProgramChange { program: 5 },
-            on_long_press: Action::PagePrev,
-            group: 0,
-        },
+        // UP/DOWN → bank step (program ±1) on a short press, page nav on a long
+        // press. Same `nav` pair on every page so navigation is uniform.
+        nav("BANK+", 1, Action::PageNext),
+        nav("BANK-", -1, Action::PagePrev),
     ],
 };
 
@@ -381,15 +370,17 @@ const PAGE_KATANA: Page = Page {
         radio("CH2", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(2)), 2),
         radio("CH3", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(3)), 2),
         radio("CH4", color::BLUE, Action::Sysex(SysexCmd::RecallPreset(4)), 2),
-        button("PAGE+", color::CYAN, Action::PageNext),
-        button("PAGE-", color::CYAN, Action::PagePrev),
+        // Same nav pair as every page: short = bank step, long = page change.
+        nav("BANK+", 1, Action::PageNext),
+        nav("BANK-", -1, Action::PagePrev),
     ],
 };
 
 /// Page 2 — USB-HID demo. Footswitches type on / send media keys to the host
 /// (the device enumerates a keyboard + consumer-control HID interface alongside
 /// MIDI + CDC). Demonstrates plain keys, a modifier combo (Ctrl+Z), and
-/// consumer/media usages. UP/DOWN keep page nav so you can leave the page.
+/// consumer/media usages. UP/DOWN are the standard nav pair (long-press to
+/// change page) so you can leave the page without the encoder.
 const PAGE_HID: Page = Page {
     name: "HID",
     buttons: [
@@ -403,9 +394,9 @@ const PAGE_HID: Page = Page {
         hid_consumer("VOL+", color::BLUE, hid::consumer::VOLUME_UP),
         hid_consumer("VOL-", color::BLUE, hid::consumer::VOLUME_DOWN),
         hid_consumer("MUTE", color::AMBER, hid::consumer::MUTE),
-        // Page nav (so the page is escapable without the encoder).
-        button("PAGE+", color::PURPLE, Action::PageNext),
-        button("PAGE-", color::PURPLE, Action::PagePrev),
+        // Same nav pair as every page: short = bank step, long = page change.
+        nav("BANK+", 1, Action::PageNext),
+        nav("BANK-", -1, Action::PagePrev),
     ],
 };
 
@@ -435,6 +426,20 @@ const fn button(label: &'static str, color: LedColor, on_press: Action) -> Butto
         color,
         on_press,
         on_long_press: Action::None,
+        group: 0,
+    }
+}
+
+/// Helper: the UP/DOWN navigation pair. A short press steps the current program
+/// by `step` (bank up / down); a long press runs `page` (page nav). Used
+/// identically on every page so navigation is always a long-press — a quick tap
+/// never changes the page out from under you, and a short tap nudges the bank.
+const fn nav(label: &'static str, step: i8, page: Action) -> ButtonConfig {
+    ButtonConfig {
+        label,
+        color: color::CYAN,
+        on_press: Action::ProgramChangeStep(step),
+        on_long_press: page,
         group: 0,
     }
 }
