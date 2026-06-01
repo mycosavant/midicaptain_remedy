@@ -280,6 +280,9 @@ async fn main(spawner: Spawner) {
 
     // ── Router (last: it depends on settings + config loaded above, and
     // paints the first page over the display task's "booting…" splash) ──────
+    // Decide whether to run the boot device-state query before `config` moves
+    // into the router (config-free gate: only sweep a Katana-configured rig).
+    let query_katana = config.uses_katana_sysex();
     let router = Router::new(
         config,
         settings,
@@ -304,6 +307,9 @@ async fn main(spawner: Spawner) {
         )
         .unwrap(),
     );
+    // Boot device-state query (active half of device sync): editor mode + an
+    // RQ1 sweep whose DT1 replies the router reflects onto the LEDs. One-shot.
+    spawner.spawn(app::device_query_task(SYSEX_OUT.sender(), query_katana).unwrap());
 
     // Liveness heartbeat. Also keeps `common` / `ws_program` alive for the
     // WS2812 driver (consumed by reference at construction, then idle).
