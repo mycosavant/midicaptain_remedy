@@ -14,7 +14,7 @@ The three observation surfaces, and the tool for each:
 |---|---|---|
 | Internal state | `defmt` logs over SWD (boot, router decisions, errors) | `probe-rs run` (RTT) |
 | Config in/out | the device's live `RuntimeConfig` (read/write/round-trip) | `cdc_config_client.py` |
-| MIDI it emits | the actual MIDI messages on USB/DIN out | `midimon.ps1` |
+| MIDI it emits | the actual MIDI messages on USB/DIN out | `midimon.ps1` (+ `sysex_decode.py` to read Roland/Katana SysEx) |
 
 > **Windows only for anything touching USB.** WSL can't see USB serial or USB
 > MIDI; run the device-facing commands from Windows PowerShell.
@@ -58,5 +58,38 @@ port id doesn't matter. `-q -f min-hex` (the default invocation) emits nothing
 but messages on stdout, so it pipes/redirects cleanly for capture or automated
 assertions.
 
-> Rust + open source by design: fork it and extend the decoder (e.g. pretty-print
-> Roland/Katana SysEx) directly for this project.
+> Pipe its hex output into `sysex_decode.py` (below) to read the Roland/Katana
+> SysEx — the boot RQ1 sweep and the amp's DT1 replies — as human lines.
+
+## `sysex_decode.py` — decode Roland / Katana SysEx off the wire
+
+The decode-side companion to `midimon.ps1`, and the lens for validating
+**device sync**: it turns the boot RQ1 sweep and the amp's DT1 replies into
+human lines — operation, the parameter the address names, the value, and a
+checksum check. A pure-Python mirror of `src/midi/katana.rs` (no dependencies);
+keep the address map in lockstep with the firmware.
+
+```bash
+# Live: pipe a monitor capture in (frames are reassembled across lines)
+./midimon.ps1 -Format min-hex | python sysex_decode.py
+
+# Decode bytes directly (with or without 0x / commas), or a saved capture:
+python sysex_decode.py F0 41 00 00 00 00 33 12 00 00 04 20 02 5A F7
+python sysex_decode.py --file capture.hex
+
+# Verify the decoder itself against known-good vectors:
+python sysex_decode.py --selftest        # -> "9/9 ALL PASS"
+```
+
+Example, watching a Katana boot sync (`device_query_task` → amp replies):
+
+```text
+DT1 set   EditorMode = ENTER  [01]
+RQ1 read  AmpType  len=1
+DT1 set   AmpType = 3 (Lead)  [03]
+RQ1 read  RecallPreset  len=2
+DT1 set   RecallPreset = 2 (CH2)  [00 02]
+```
+
+A bad checksum is flagged (`!! CHECKSUM 0x.., expected 0x..`) rather than
+silently accepted, and non-Roland SysEx is labelled by manufacturer id.
