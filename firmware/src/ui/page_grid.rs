@@ -51,21 +51,30 @@ use crate::config::{Label, NAME_CAP, PAGE_BUTTONS};
 use crate::events::{Cell, CellState, LedColor};
 
 // ── Geometry (240×240) ───────────────────────────────────────────────────
+// The grid is inset by SIDE_LANE_W on the left/right and a BAND_H strip at the
+// bottom, leaving fixed lanes for the live expr/encoder meters (see the meter
+// section below). The layout is constant regardless of meter STYLE, so toggling
+// the style is a pure draw change — no reflow.
 const HEADER_H: u32 = 22;
-const MARGIN: i32 = 3;
+/// Width of each reserved side meter lane (EXP1 left, EXP2 right).
+const SIDE_LANE_W: i32 = 6;
+/// Left edge of the cell grid (just past the left meter lane).
+const MARGIN: i32 = SIDE_LANE_W;
 const CELL_GAP: i32 = 2;
-const CELL_W: u32 = 57;
+const CELL_W: u32 = 55; // (240 − 2·SIDE_LANE_W − 3·CELL_GAP) / 4, floored to fit lanes
 const ROW_H: u32 = 88;
 const ROW0_Y: i32 = 24;
 const ROW1_Y: i32 = 114; // ROW0_Y + ROW_H + CELL_GAP
 const FOOT_Y: i32 = 204; // ROW1_Y + ROW_H + CELL_GAP
 // The footer is a deliberately short, quiet "utility strip" — page nav now, and
 // the menu's BACK / SAVE buttons later. Kept low-profile so it never dominates.
-const FOOT_H: u32 = 30;
-const FOOT_W: u32 = 116; // (240 − 2·MARGIN − CELL_GAP) / 2
+const FOOT_H: u32 = 28;
+const FOOT_W: u32 = 112; // (grid width − CELL_GAP) / 2
 /// First scan-index that lives in the footer (UP/DOWN). Cells `>=` this get the
 /// muted utility-strip style instead of the active/idle cell style.
 const FOOT_INDEX: usize = 8;
+/// Right edge of the cell grid (start of the right meter lane).
+const GRID_RIGHT: i32 = MARGIN + 4 * (CELL_W as i32 + CELL_GAP) - CELL_GAP; // 232
 
 /// Width-per-character of [`FONT_8X13_BOLD`] (the cell-label font), used to
 /// budget how many characters fit before truncation.
@@ -128,6 +137,58 @@ fn led_to_display(c: LedColor) -> Color {
     Color::rgb(up(c.r), up(c.g), up(c.b))
 }
 
+// ── Live expr/encoder meters ───────────────────────────────────────────────
+// Three 0..=127 controls (EXP1, EXP2, encoder) drawn in the reserved lanes. The
+// STYLE is a compile-time switch so we can A/B the look on hardware by flipping
+// one line + reflashing — we're still settling the design. Geometry is identical
+// across styles, so switching never reflows the grid; only the draw changes.
+//   EdgeFill    — thin faders: EXP fill bottom→top (heel→toe); ENC fills L→R.
+//   EdgeThick   — "growing border": bars thicken inward/upward from each edge.
+//   FooterStrip — three labelled mini bars in the bottom band; side lanes idle.
+
+/// On-screen meter rendering style.
+//
+// The inactive variants are a deliberate compile-time A/B switch (only the one
+// `METER_STYLE` selects is "constructed"), so silence the unused-variant lint
+// rather than churn it each time we settle on a different default.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MeterStyle {
+    /// Thin faders that fill along the edge (the picked default).
+    EdgeFill,
+    /// Bars that thicken from the edge with value (the "growing border").
+    EdgeThick,
+    /// Three labelled mini level-bars in the bottom band; side lanes stay idle.
+    FooterStrip,
+}
+
+/// Active meter style. **Flip this one line to A/B on hardware.**
+const METER_STYLE: MeterStyle = MeterStyle::EdgeFill;
+
+// Side lanes span the two cell rows only (not header/footer), so a full-height
+// bar can't paint over them.
+const LANE_Y0: i32 = ROW0_Y; // 24
+const LANE_Y1: i32 = ROW1_Y + ROW_H as i32; // 202
+const LANE_H: i32 = LANE_Y1 - LANE_Y0; // 178
+const LANE_LEFT_X: i32 = 0;
+const LANE_RIGHT_X: i32 = 240 - SIDE_LANE_W; // 234
+// Bottom band: the encoder fader (edge styles) or the 3-bar footer strip.
+const BAND_Y: i32 = FOOT_Y + FOOT_H as i32; // 232
+const BAND_H: i32 = 240 - BAND_Y; // 8
+const BAND_X0: i32 = MARGIN; // 6
+const BAND_W: i32 = GRID_RIGHT - MARGIN; // 226
+
+/// Meter accent hues — mid-bright so they read as ambient, not alarming.
+const METER_EXP: Color = Color::rgb(0, 130, 140); // teal (both pedals)
+const METER_ENC: Color = Color::rgb(170, 95, 0); // amber (encoder)
+/// Dim baseline so an empty lane stays discoverable (the meter is "armed").
+const METER_BASE: Color = Color::rgb(20, 20, 20);
+
+/// Map a `0..=127` control value to a `0..=span` pixel extent.
+const fn meter_extent(value: u8, span: i32) -> i32 {
+    (value as i32 * span) / 127
+}
+
 /// Whether a cell is drawn "lit" (active colour) vs. "dim" (idle). Mirrors the
 /// LED feedback: a toggle/radio/momentary is lit when on/selected/held; a cycle
 /// is lit off its base state (`pos > 1`); a plain bound button is always lit.
@@ -163,6 +224,10 @@ pub struct PageGrid {
     /// [`DisplayCmd::Flash`]: crate::events::DisplayCmd::Flash
     flashing: [bool; PAGE_BUTTONS],
     header_dirty: bool,
+    /// Live meter levels (`0..=127`): `[EXP1, EXP2, encoder]`.
+    meters: [u8; 3],
+    /// Per-meter "needs repaint" flag.
+    meters_dirty: [bool; 3],
 }
 
 impl PageGrid {
@@ -176,6 +241,21 @@ impl PageGrid {
             dirty: [true; PAGE_BUTTONS],
             flashing: [false; PAGE_BUTTONS],
             header_dirty: true,
+            meters: [0; 3],
+            meters_dirty: [true; 3],
+        }
+    }
+
+    /// Adopt fresh meter levels (`[EXP1, EXP2, encoder]`, each `0..=127`),
+    /// flagging only the meters whose value changed. The router already sends
+    /// these only on a real expr/encoder change, and each meter redraw is a
+    /// small lane fill, so a plain value compare is enough to stay cheap.
+    pub fn set_meters(&mut self, exp1: u8, exp2: u8, encoder: u8) {
+        for (i, &v) in [exp1, exp2, encoder].iter().enumerate() {
+            if self.meters[i] != v {
+                self.meters[i] = v;
+                self.meters_dirty[i] = true;
+            }
         }
     }
 
@@ -415,6 +495,74 @@ impl PageGrid {
         }
         Ok(())
     }
+
+    /// Draw meter `i` (`0`=EXP1, `1`=EXP2, `2`=encoder) per the active
+    /// [`MeterStyle`]. Each path clears its own region first, so a shrinking
+    /// level erases cleanly.
+    fn draw_meter<D>(&self, target: &mut D, i: usize) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = Rgb565>,
+    {
+        match METER_STYLE {
+            MeterStyle::EdgeFill => self.draw_edge(target, i, false),
+            MeterStyle::EdgeThick => self.draw_edge(target, i, true),
+            MeterStyle::FooterStrip => self.draw_strip(target, i),
+        }
+    }
+
+    /// Edge styles: EXP1/EXP2 in the side lanes, encoder in the bottom band.
+    /// `thick` selects "grow thickness from the edge" vs. "fill along the edge".
+    fn draw_edge<D>(&self, target: &mut D, i: usize, thick: bool) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = Rgb565>,
+    {
+        let value = self.meters[i];
+        if i < 2 {
+            // Side lane spanning the two cell rows (EXP1 left, EXP2 right).
+            let lane_x = if i == 0 { LANE_LEFT_X } else { LANE_RIGHT_X };
+            fill_rect(target, lane_x, LANE_Y0, SIDE_LANE_W, LANE_H, BG)?;
+            fill_rect(target, lane_x, LANE_Y0, SIDE_LANE_W, LANE_H, METER_BASE)?;
+            if thick {
+                // Bar pinned to the outer screen edge, growing inward.
+                let w = meter_extent(value, SIDE_LANE_W);
+                let x = if i == 0 { 0 } else { 240 - w };
+                fill_rect(target, x, LANE_Y0, w, LANE_H, METER_EXP)?;
+            } else {
+                // Fader: fill from the bottom up (heel → toe).
+                let h = meter_extent(value, LANE_H);
+                fill_rect(target, lane_x, LANE_Y1 - h, SIDE_LANE_W, h, METER_EXP)?;
+            }
+        } else {
+            // Encoder: the bottom band.
+            fill_rect(target, BAND_X0, BAND_Y, BAND_W, BAND_H, BG)?;
+            fill_rect(target, BAND_X0, BAND_Y, BAND_W, BAND_H, METER_BASE)?;
+            if thick {
+                let h = meter_extent(value, BAND_H);
+                fill_rect(target, BAND_X0, 240 - h, BAND_W, h, METER_ENC)?;
+            } else {
+                let w = meter_extent(value, BAND_W);
+                fill_rect(target, BAND_X0, BAND_Y, w, BAND_H, METER_ENC)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Footer-strip style: three mini level-bars (E1/E2/ENC) sharing the bottom
+    /// band, each filling left→right. The side lanes stay idle (black).
+    fn draw_strip<D>(&self, target: &mut D, i: usize) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = Rgb565>,
+    {
+        let third = BAND_W / 3;
+        let sub_x0 = BAND_X0 + (i as i32) * third;
+        let sub_w = third - 2; // small gap between bars
+        fill_rect(target, sub_x0, BAND_Y, sub_w, BAND_H, BG)?;
+        fill_rect(target, sub_x0, BAND_Y, sub_w, BAND_H, METER_BASE)?;
+        let color = if i < 2 { METER_EXP } else { METER_ENC };
+        let w = meter_extent(self.meters[i], sub_w);
+        fill_rect(target, sub_x0, BAND_Y, w, BAND_H, color)?;
+        Ok(())
+    }
 }
 
 impl Default for PageGrid {
@@ -441,13 +589,36 @@ impl Widget for PageGrid {
                 drew = true;
             }
         }
+        for i in 0..3 {
+            if self.meters_dirty[i] {
+                self.draw_meter(target, i)?;
+                self.meters_dirty[i] = false;
+                drew = true;
+            }
+        }
         Ok(drew)
     }
 
     fn mark_dirty(&mut self) {
         self.header_dirty = true;
         self.dirty = [true; PAGE_BUTTONS];
+        self.meters_dirty = [true; 3];
     }
+}
+
+/// Fill an axis-aligned rectangle in one colour. A non-positive width/height is
+/// a no-op (lets the meter code pass a zero-extent bar without a guard at every
+/// call site).
+fn fill_rect<D>(target: &mut D, x: i32, y: i32, w: i32, h: i32, c: Color) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+    Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32))
+        .into_styled(PrimitiveStyleBuilder::new().fill_color(c.to_rgb565()).build())
+        .draw(target)
 }
 
 /// Copy `label` into `buf`, truncating to `max` characters with a trailing `~`

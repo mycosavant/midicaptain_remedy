@@ -201,6 +201,17 @@ pub enum DisplayCmd {
         note: Option<u8>,
         cents: i16,
     },
+    /// Live continuous-control levels (`0..=127`) for the on-screen meters: the
+    /// two expression pedals and the encoder. **Screen-neutral** — it overlays
+    /// the performance grid and never switches the active screen; the display
+    /// task only applies it while the grid is showing. Sent by the router on
+    /// each expr/encoder change in performance mode. The `PageGrid` widget draws
+    /// these in reserved edge/footer lanes (see `ui::page_grid`).
+    Meters {
+        exp1: u8,
+        exp2: u8,
+        encoder: u8,
+    },
 }
 
 // Hand-written so the owned-string variants can format without depending on a
@@ -224,6 +235,9 @@ impl defmt::Format for DisplayCmd {
             }
             DisplayCmd::Tuner { note, cents } => {
                 defmt::write!(f, "Tuner(note={} cents={})", note, cents)
+            }
+            DisplayCmd::Meters { exp1, exp2, encoder } => {
+                defmt::write!(f, "Meters(e1={} e2={} enc={})", exp1, exp2, encoder)
             }
         }
     }

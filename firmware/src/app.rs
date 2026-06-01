@@ -150,6 +150,10 @@ pub struct Router {
     /// page's [`config::ContinuousBinding`] encoder binding. A single relative
     /// accumulator shared across pages (not reset on page change).
     enc_value: u8,
+    /// Latest level (`0..=127`) of each continuous control for the on-screen
+    /// meters: `[EXP1, EXP2, encoder]`. Pushed to the display on change (see
+    /// [`Self::send_meters`]); `[2]` mirrors [`Self::enc_value`].
+    meter_values: [u8; 3],
     /// Current program number, for [`Action::ProgramChangeStep`] (inc/dec).
     /// Set by any absolute [`Action::ProgramChange`]; stepped by inc/dec.
     current_program: u8,
@@ -207,6 +211,7 @@ impl Router {
             menu: Menu::new(),
             tuner: TunerState::new(),
             enc_value: 0,
+            meter_values: [0; 3],
             current_program: 0,
             toggles: [false; 128],
             group_sel: [None; config::MAX_GROUPS],
@@ -621,6 +626,18 @@ impl Router {
         let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
     }
 
+    /// Push the live meter levels to the display as a screen-neutral overlay.
+    /// `try_send` (latest-wins; a full queue just drops the intermediate frame,
+    /// the next change re-sends). Only called in performance mode, and the
+    /// display task additionally ignores it unless the grid is showing.
+    fn send_meters(&self) {
+        let _ = self.display.try_send(DisplayCmd::Meters {
+            exp1: self.meter_values[0],
+            exp2: self.meter_values[1],
+            encoder: self.meter_values[2],
+        });
+    }
+
     /// Emit a continuous-control value (`0..=127` — from the encoder or an
     /// expression pedal) per the active page's [`config::ContinuousBinding`]:
     /// a CC carrying the value verbatim, or a Katana SysEx with the value scaled
@@ -657,6 +674,8 @@ impl Router {
                     if v != self.enc_value {
                         self.enc_value = v;
                         self.emit_continuous(binding, v);
+                        self.meter_values[2] = v;
+                        self.send_meters();
                     }
                 }
                 Mode::Menu => {
@@ -683,13 +702,15 @@ impl Router {
         }
     }
 
-    fn on_expr(&self, ev: ExprEvent) {
+    fn on_expr(&mut self, ev: ExprEvent) {
         // Pedals are silent in the menu — they're being moved for calibration.
         if !matches!(self.mode, Mode::Performance) {
             return;
         }
         let pedal = (ev.pedal as usize).min(1);
         self.emit_continuous(self.current_page().expr[pedal], ev.value);
+        self.meter_values[pedal] = ev.value;
+        self.send_meters();
     }
 
     /// Dispatch inbound device MIDI. In the tuner it drives the pitch readout;
