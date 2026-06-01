@@ -1,27 +1,37 @@
 # Introduction
 
-This is a tentative to reverse engineer/develop alternative firmwares for the [Paintaudio Midi Captain](https://paintaudio.com/products/paint-audio-midi-captain-blue).
+This is an effort to reverse-engineer and develop alternative firmware for the [Paint Audio MIDI Captain](https://paintaudio.com/products/paint-audio-midi-captain-blue).
 
-This is based on reverse engineering, and is make available to the public hoping it will be useful, but
+It is based on reverse engineering and is made available to the public in the hope that it will be useful, but
 I offer
 
-**no warranty whatsoever on anything (if you break it YOU ARE ON YOUR OWN!!!!)**.
+**no warranty whatsoever on anything (if you break it, YOU ARE ON YOUR OWN!!!!)**.
 
-This infomation is similar to other Paintaudio products:
+This information should also apply to other Paint Audio products:
 - [Midi Captain STD Version Black](https://paintaudio.com/products/midi-captain-std-vesion-black) (Same with no wireless module)
 - [Midi Captain Mini 6](https://paintaudio.com/products/midi-captain-mini-6-controller-with-hid-multi-state-cycling)
 - [Midi Captain Nano 4](https://paintaudio.com/products/midi-captain-nano-4-controller-with-hid-multi-state-cycling)
 - [Midi Captain Duo](https://paintaudio.com/products/midi-captain-duo-controller-with-hid-multi-state-cycling-1)
 - [Midi Captain One](https://paintaudio.com/products/midi-captain-one-controller-with-hid-multi-state-cycling-1)
 
-that seems to be based on the same microcontroller (RP2040) and CircuitPython.
-But not having them I cannot verify the information.
+which appear to be based on the same microcontroller (RP2040) and CircuitPython.
+However, as I do not own them, I cannot verify the information.
+
+> **Project status — custom firmware:** Beyond documenting the OEM hardware, this
+> repository now hosts two custom firmware efforts. [`remedy/`](./remedy/) was the
+> first attempt: a configuration-driven CircuitPython firmware (bumped to
+> CircuitPython 10). Having run into the limitations of CircuitPython for this
+> use case, the work moved to a lower-level language: the current focus is the
+> Rust + [Embassy](https://embassy.dev) firmware in [`firmware/`](./firmware/).
+> Its [`README.md`](./firmware/README.md) and [`HARDWARE.md`](./firmware/HARDWARE.md)
+> capture the latest reverse-engineering findings (verified pin map, SWD debug
+> pads, display orientation, and more).
 
 # General Description
 
-The board is based on a Raspberry Pi Core Microcontroller ([RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)) and is programmed using [CircuitPython](https://circuitpython.org).
+The board is built around a Raspberry Pi RP2040 microcontroller ([RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)) and is programmed using [CircuitPython](https://circuitpython.org).
 
-The CircuitPython Version on the board as per firmware 4.0 is 7.3.1 (see boot_out.txt)
+The CircuitPython version on the board, as of firmware 4.0, is 7.3.1 (see boot_out.txt).
 
 Links:
 - [RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
@@ -32,45 +42,45 @@ Links:
 
 ## Going into update mode
 
-As described in the main product page [here](https://paintaudio.com/products/paint-audio-midi-captain-blue), to modify the CircuitPython code you have to enter the Update Mode
+As described on the main product page [here](https://paintaudio.com/products/paint-audio-midi-captain-blue), to modify the CircuitPython code you must enter Update Mode.
 
-On the MIDI Captain this is done pressing switch0 (top left switch) when powering up while being connected via usb to a computer.
-This will show you the MIDICAPTAIN drive where you can load new firmware and modify the code.
+On the MIDI Captain this is done by pressing switch0 (the top-left switch) while powering up with the device connected to a computer via USB.
+This exposes the MIDICAPTAIN drive, where you can load new firmware and modify the code.
 
-## Going into circuitpython bootloader mode
+## Going into CircuitPython bootloader mode
 
-On the board there's a 2 pin header that if you short it and reboot you'll go into circuitpython recovery mode.
+On the board there is a 2-pin header; if you short it and reboot, the device enters CircuitPython recovery mode.
 
 **Don't mess with it if you don't know what you are doing.**
 
 - [Paintaudio Recover uf2 file](https://cdn.shopify.com/s/files/1/0656/8312/8548/files/midicpPico.uf2)
 
-## Circuitpython Serial Debugging Console
+## CircuitPython Serial Debugging Console
 
 1. Install the [mu editor][https://learn.adafruit.com/welcome-to-circuitpython/installing-mu-editor]
-2. Start the midi captain in fw update mode (switch 0 pressed at boot)
-3. with the mu editor, open the boot.py file and the serial consol
-4. comment the following lines to enable autoreload
+2. Start the MIDI Captain in firmware update mode (switch 0 pressed at boot)
+3. Using the mu editor, open the boot.py file and the serial console
+4. Comment out the following lines to enable autoreload
    ```python
    # import supervisor
    # supervisor.disable_autoreload()
    ```
-5. Restart in fw update mode. You will see:
+5. Restart in firmware update mode. You will see:
    ```shell
    Adafruit CircuitPython 7.3.1 on 2022-06-22; Raspberry Pi Pico with rp2040
    >>>
    ```
-6. if you modify the boot.py or the code.py files you will see
+6. If you modify the boot.py or code.py files you will see
    ```shell
    Auto-reload is on. Simply save files over USB to run them or enter REPL to disable.
    code.py output:
    ```
-7. You can stop the boot pressing `Enter` at the prompt, or soft reboot with `Ctrl+D`
+7. You can stop the boot by pressing `Enter` at the prompt, or soft-reboot with `Ctrl+D`.
 
 
-### Relevant Files and Folder Description
+### Relevant Files and Folders
 
-based on the [normal+geek_super 3in1 FW4.0](https://cdn.shopify.com/s/files/1/0656/8312/8548/files/FW-MIDICP-10-switch-3in1-V4.0.zip)
+Based on the [normal+geek_super 3in1 FW4.0](https://cdn.shopify.com/s/files/1/0656/8312/8548/files/FW-MIDICP-10-switch-3in1-V4.0.zip).
 
 ```shell
 .
@@ -140,25 +150,25 @@ else:
 
 #### code.py
 
-A lot of code to select the firmware mode.
+A large block of code that selects the firmware mode.
 
 # Peripherals
 
-## Midi Captain Blue
+## MIDI Captain Blue
 
-The board is based on a Raspberry Pi Core Microcontroller ([Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)),
+The board is built around a Raspberry Pi RP2040 microcontroller ([Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)),
 with the following peripherals:
 
 - 10 footswitches
-- 30 RGB led, separately addressables
-- Midi In/Out
-- 2 expression pedal Input
+- 30 individually addressable RGB LEDs
+- MIDI In/Out
+- 2 expression-pedal inputs
 - Battery
-- wireless module
+- Wireless module
 
 ### GPIO Assignment
 
-| GPIO | PERIPERAL        | board lib pin / notes?  |
+| GPIO | PERIPHERAL       | board lib pin / notes?  |
 | ---- | ---------------- | ----------------------- |
 | GP0  | encoder switch   |                         |
 | GP1  | switch1          |                         |
@@ -193,20 +203,20 @@ with the following peripherals:
 
 # Reverse engineering code
 
-## Midi UART
+## MIDI UART
 
-### Uart Pins
+### UART Pins
 
 UART pins can be assigned to any GPIO.
 
-### Gpio Loopback Test
+### GPIO Loopback Test
 
-1. set a midi cable between midi in and out
-2. run the following
+1. Connect a MIDI cable between MIDI In and Out
+2. Run the following
 
-## Neopixel Led
+## NeoPixel LEDs
 
-30 RGB led on the board.
+30 RGB LEDs on the board.
 
 ### Test Code
 
@@ -244,7 +254,7 @@ display = ST7789(
 
 ## Wireless Module
 
-The wireless module is a "wireless mouse" serial RF IC
+The wireless module is a "wireless mouse"-style serial RF IC.
 
 [BK2461 Datasheet](https://www.alldatasheet.com/datasheet-pdf/pdf/1132247/ETC2/BK2461.html)
 
