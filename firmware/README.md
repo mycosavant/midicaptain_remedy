@@ -1,15 +1,18 @@
 # MIDICaptain Remedy — Rust + Embassy firmware
 
-Rust port of the MIDI Captain firmware. **Status: subsystems built,
-integration next (end of Wave 1).** The ST7789 display is
-hardware-validated, and every input/output subsystem now exists as a
-self-contained module with a proof example: HAL tasks (encoder,
-expression pedals, WS2812 LEDs), the MIDI engine (USB+DIN mux, streaming
-SysEx, BOSS Katana/Roland builders), and a flash-backed settings store.
-The application binary (`src/bin/midicaptain.rs`) currently runs a
-buttons→router→display skeleton; **Wave 2 wires the landed modules into
-the router** and builds the config/page action system. See
-[`ARCHITECTURE.md`](ARCHITECTURE.md) and [`HANDOFF.md`](HANDOFF.md).
+Rust port of the MIDI Captain firmware. **Status: functionally complete
+for the single-device live use case (Waves 1–3 merged).** The full
+input→router→output pipeline runs on hardware: footswitches/encoder/
+expression pedals → config-driven action dispatch → display + LEDs + MIDI.
+Landed and merged: the config/page action system (8 action tiers — CC
+toggle/momentary/trigger, Program Change + step, radio groups, multi-state
+cycles, tap-tempo, USB-HID, MIDI-thru matrix), the page-grid performance
+screen, the settings menu with live pedal calibration, an on-device config
+editor (`Mode::Edit`), a chromatic tuner mode, flash persistence, and a
+USB-CDC config-sync link (COBS+CRC-16, GET/SET, hot-reload). See
+[`HANDOFF.md`](HANDOFF.md) for the remaining tail (SysEx-in routing →
+device sync, PWM backlight, audio-DSP tuner, webapp sync) and
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the task graph.
 
 This crate lives alongside the existing CircuitPython firmware in
 [`../remedy/`](../remedy/). That code is the **behavioural reference**
@@ -149,17 +152,30 @@ cargo run --release --example blink
   splash + widgets render upright, centred, flicker-free.
 - MIDI codec: `midi_engine_test`'s self-test asserts byte-exactness against
   vectors from the CircuitPython reference (`remedy/lib/midi.py`).
-- The other landed modules (encoder, expression, LEDs, storage) build clean
-  and ship a proof example each; **on-hardware bring-up of those, and of the
-  app binary's channel pipeline, is still pending** a probe session.
+- Self-tests gate behaviour: `config_selftest`, `storage_coexist_selftest`,
+  `proto_selftest`, `pitch_selftest` (run them per `TESTING.md §3`).
+- **App pipeline hardware-validated** on real silicon (probe-rs/SWD): clean
+  boot, footswitch → page-nav + toggle LEDs, flash settings persist across
+  reboot. The audio-DSP tuner front-end (GP26) is the one path still
+  awaiting a hardware mod before its `adc_task` can be validated.
 
 ## What's next
 
-**Wave 2 — integration (serial):** wire the landed HAL + MIDI modules into
-the router in `src/bin/midicaptain.rs`, then build the config/page action
-system (what each button does per page). See [`HANDOFF.md`](HANDOFF.md) for
-the dependency map and the parallel/serial split, and
-[`ARCHITECTURE.md`](ARCHITECTURE.md) for the task graph.
+Waves 1–3 are merged. The remaining tail (see [`HANDOFF.md`](HANDOFF.md)
+for the dependency map and parallel/serial split):
+
+1. **Route `SYSEX_IN` into the router** (serial glue) — incoming Roland/
+   Katana SysEx is parsed but not yet consumed; this unblocks device sync.
+2. **Device sync** — a Katana DT1 *response* parser (`src/midi/katana.rs`
+   has the builders, not the parser) + an RQ1 boot sweep that reflects amp
+   state on the toggle LEDs.
+3. **PWM backlight** — `src/display.rs` drives the backlight GPIO-high;
+   wrap it in PWM and wire the deferred "Display Brightness" menu item.
+4. **Webapp live-config sync** (cross-branch, PR #31 open) — its JS codec
+   must be re-synced to the current `RuntimeConfig` / `PROTO_VERSION = 8`.
+5. **Tuner Phase 3 (audio DSP)** — `src/pitch.rs` (YIN) is done; an
+   `adc_task` sampling GP26 is **gated on the analog front-end hardware
+   mod** (`HARDWARE.md`).
 
 ## Repo conventions
 
