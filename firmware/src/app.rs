@@ -919,6 +919,9 @@ impl Router {
             MenuOutcome::Redraw => {
                 let cmd = self.menu.display_cmd(&self.settings);
                 let _ = self.display.try_send(cmd);
+                // Keep the backlight live with the (possibly just-edited) setting
+                // so "Disp Bright" dims the screen as the user turns the encoder.
+                self.sync_backlight();
             }
             MenuOutcome::Exit => self.leave_menu().await,
             MenuOutcome::CalSaved(cals) => {
@@ -961,6 +964,13 @@ impl Router {
     /// config apply.
     fn sync_thru(&self) {
         mux::set_thru(self.config.midi_thru);
+    }
+
+    /// Push the persisted display-brightness setting to the display task, which
+    /// applies it to the PWM backlight. Called at startup and whenever the
+    /// settings menu changes it (so the screen dims live as the user adjusts).
+    fn sync_backlight(&self) {
+        let _ = self.display.try_send(DisplayCmd::Backlight(self.settings.display_brightness));
     }
 
     // ── config sync (webapp ↔ device over CDC) ─────────────────────────
@@ -1051,6 +1061,7 @@ pub async fn router_task(
 ) {
     r.refresh_page(); // initial paint
     r.sync_thru(); // publish the config's MIDI-thru routes to the mux
+    r.sync_backlight(); // apply the persisted display brightness to the PWM backlight
     loop {
         match select(
             select4(

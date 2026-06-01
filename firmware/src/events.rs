@@ -215,6 +215,11 @@ pub enum DisplayCmd {
         exp2: u8,
         encoder: u8,
     },
+    /// Set the display backlight brightness, percent (`0..=100`). **Screen-
+    /// neutral** — it adjusts the PWM backlight duty without touching the
+    /// active screen or any widget. Sent by the router at boot and on each
+    /// settings-menu change to "Disp Bright".
+    Backlight(u8),
 }
 
 /// A single pre-formatted line (title or row) in a [`DisplayCmd::List`] view.
@@ -256,6 +261,7 @@ impl defmt::Format for DisplayCmd {
             DisplayCmd::Meters { exp1, exp2, encoder } => {
                 defmt::write!(f, "Meters(e1={} e2={} enc={})", exp1, exp2, encoder)
             }
+            DisplayCmd::Backlight(pct) => defmt::write!(f, "Backlight({}%)", pct),
         }
     }
 }

@@ -33,7 +33,7 @@ use embassy_futures::select::{select, Either};
 use embassy_rp::adc::{Adc, Config as AdcConfig, InterruptHandler as AdcIrq};
 use embassy_rp::bind_interrupts;
 use embassy_rp::dma::InterruptHandler as DmaIrq;
-use embassy_rp::gpio::{Input, Output, Pull};
+use embassy_rp::gpio::{Input, Pull};
 use embassy_rp::peripherals::{DMA_CH0, PIO0, UART0, USB};
 use embassy_rp::pio::{InterruptHandler as PioIrq, Pio};
 use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
@@ -54,7 +54,7 @@ use static_cell::StaticCell;
 
 use midicaptain_firmware::app::{self, Router};
 use midicaptain_firmware::config;
-use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
+use midicaptain_firmware::display::{self, Backlight, DisplayPeripherals, RemedyDisplay};
 use midicaptain_firmware::events::{CalStep, DisplayCmd};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
 use midicaptain_firmware::hal::expression::{self, ExpressionInputs};
@@ -116,6 +116,7 @@ async fn main(spawner: Spawner) {
         cs: p.PIN_13,
         dc: p.PIN_12,
         backlight: p.PIN_8,
+        pwm_slice: p.PWM_SLICE4,
     }) {
         Ok((disp, backlight)) => {
             spawner.spawn(display_task(disp, backlight, DISPLAY_CH.receiver()).unwrap());
@@ -566,7 +567,7 @@ const FLASH_MS: u64 = 140;
 /// [`DisplayCmd::Flash`] briefly highlights one grid cell; a short timer
 /// restores it without blocking the command stream.
 #[embassy_executor::task]
-async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, commands: app::DisplayReceiver) {
+async fn display_task(mut display: RemedyDisplay, mut backlight: Backlight, commands: app::DisplayReceiver) {
     let _ = display.clear(Palette::BLACK.to_rgb565());
 
     // Performance screen.
@@ -635,6 +636,8 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
             DisplayCmd::Cal { .. } => Screen::Text,
             // Meters overlay the grid — screen-neutral; never switch for them.
             DisplayCmd::Meters { .. } => screen,
+            // Backlight only sets PWM duty — screen-neutral, never switches.
+            DisplayCmd::Backlight(_) => screen,
         };
         if want != screen {
             let _ = display.clear(Palette::BLACK.to_rgb565());
@@ -700,6 +703,7 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                     let _ = grid.render(&mut display);
                 }
             }
+            DisplayCmd::Backlight(pct) => backlight.set_percent(pct),
         }
     }
 }

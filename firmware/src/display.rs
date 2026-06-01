@@ -43,6 +43,7 @@
 use embassy_rp::Peri;
 use embassy_rp::gpio::Output;
 use embassy_rp::peripherals::SPI1;
+use embassy_rp::pwm::{Config as PwmConfig, Pwm};
 use embassy_rp::spi::{self, Spi};
 use embassy_time::Delay;
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -103,17 +104,47 @@ pub struct DisplayPeripherals {
     pub cs:        Peri<'static, embassy_rp::peripherals::PIN_13>,
     pub dc:        Peri<'static, embassy_rp::peripherals::PIN_12>,
     pub backlight: Peri<'static, embassy_rp::peripherals::PIN_8>,
+    /// PWM slice 4 — GP8 (the backlight pin) is its channel-A output, so the
+    /// backlight is dimmable rather than plain GPIO on/off.
+    pub pwm_slice: Peri<'static, embassy_rp::peripherals::PWM_SLICE4>,
+}
+
+/// PWM-dimmable display backlight on GP8 (PWM slice 4, channel A). The
+/// counter wraps at `BL_TOP = 100`, so the compare value *is* the brightness
+/// percent — `set_percent` maps `0..=100` straight onto duty (`0` = off,
+/// `100` ≈ full). Held by the display task; dropping it darkens the screen.
+pub struct Backlight {
+    pwm: Pwm<'static>,
+    config: PwmConfig,
+}
+
+/// Counter wrap for the backlight PWM. With the default `/1` divider this runs
+/// at ≈ 1.24 MHz (125 MHz / 101) — far above any visible flicker — and makes
+/// the compare value a direct 0..=100 percent.
+const BL_TOP: u16 = 100;
+
+impl Backlight {
+    /// Set the backlight brightness, percent (`0..=100`, clamped).
+    pub fn set_percent(&mut self, pct: u8) {
+        self.config.compare_a = pct.min(100) as u16;
+        self.pwm.set_config(&self.config);
+    }
 }
 
 /// Bring up the ST7789. Returns the initialised display *and* the
-/// backlight pin (held by the caller; dropping it darkens the screen).
+/// [`Backlight`] (held by the caller; dropping it darkens the screen).
 ///
 /// Blocks the executor for ~150 ms during the ST7789 init sequence —
 /// call this once during boot before spawning long-running tasks.
-pub fn init(peri: DisplayPeripherals) -> Result<(RemedyDisplay, Output<'static>), InitError> {
-    // Backlight is plain GPIO high for now. A PWMOut wrapper lands when
-    // the settings-menu "Display Brightness" item ports over.
-    let backlight = Output::new(peri.backlight, embassy_rp::gpio::Level::High);
+pub fn init(peri: DisplayPeripherals) -> Result<(RemedyDisplay, Backlight), InitError> {
+    // PWM-dimmable backlight on GP8 (slice 4, channel A). Start at the default
+    // brightness so the boot splash is visible; the router pushes the persisted
+    // setting once it's up (via `DisplayCmd::Backlight`).
+    let mut bl_config = PwmConfig::default();
+    bl_config.top = BL_TOP;
+    bl_config.compare_a = crate::storage::DEFAULT_DISPLAY_BRIGHTNESS.min(100) as u16;
+    let bl_pwm = Pwm::new_output_a(peri.pwm_slice, peri.backlight, bl_config.clone());
+    let backlight = Backlight { pwm: bl_pwm, config: bl_config };
 
     // SPI1 in write-only mode — display has no MISO line.
     let mut spi_config = spi::Config::default();
