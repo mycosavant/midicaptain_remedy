@@ -87,6 +87,42 @@ pub enum CcValue {
     Trigger(u8),
 }
 
+/// What a continuous control — the rotary encoder or an expression pedal —
+/// emits on a given page. Stored **per page** (on [`Page`] / [`OwnedPage`]) so a
+/// pedal can be mod-wheel on one page and wah on another, mirroring the
+/// `[encoder]` / `[expression.pedalN]` blocks in `remedy/config/pages/*.toml`.
+/// Before this, the encoder/pedal CCs were global consts in `app.rs`.
+#[derive(Clone, Copy, PartialEq, Eq, Default, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub enum ContinuousBinding {
+    /// Inert on this page — the control sends nothing.
+    ///
+    /// NOTE: serde keys variants by position — append only (see
+    /// [`CcValue::Momentary`]).
+    #[default]
+    None,
+    /// Send Control Change `cc` carrying the control's live value (`0..=127`).
+    MidiCc(u8),
+    /// Drive a Katana SysEx parameter; the control's `0..=127` value is scaled
+    /// to the parameter's `0..=100` range (see `app::Router::emit_continuous`).
+    /// Ports the CP `sysex:volume` / `sysex:wah_position` encoder/pedal binds.
+    Sysex(ContinuousSysex),
+}
+
+/// A continuous Katana SysEx parameter for [`ContinuousBinding::Sysex`]. Unlike
+/// [`SysexCmd::Volume`] (which carries a *fixed* value for a discrete button
+/// press), the value here comes live from the control, so the variant carries no
+/// payload — just which parameter to drive.
+///
+/// NOTE: serde keys variants by position — append only.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub enum ContinuousSysex {
+    /// Master volume — addr `00 00 04 22`, `0..=100` (`katana::set_volume`).
+    Volume,
+    /// Pedal/wah position — addr `60 00 01 5D`, `0..=100`
+    /// (`katana::set_wah_position`).
+    Wah,
+}
+
 /// A named BOSS Katana SysEx command. The config stays free of raw Roland
 /// addresses — the router builds the on-wire message via
 /// [`crate::midi::katana`], which owns those.
@@ -232,11 +268,16 @@ impl ButtonConfig {
     };
 }
 
-/// A page: a name plus the ten button bindings (scan-index order).
+/// A page: a name, the ten button bindings (scan-index order), and the
+/// per-page continuous-control bindings (encoder + the two expression pedals).
 #[derive(Clone, Copy)]
 pub struct Page {
     pub name: &'static str,
     pub buttons: [ButtonConfig; PAGE_BUTTONS],
+    /// What the rotary encoder drives on this page.
+    pub encoder: ContinuousBinding,
+    /// What each expression pedal drives on this page (`[pedal1, pedal2]`).
+    pub expr: [ContinuousBinding; 2],
 }
 
 /// A multi-state cycle definition — baked (`'static`) form of [`CycleDef`].
@@ -323,9 +364,17 @@ pub mod hid {
 }
 
 // ── Baked-in default configuration ─────────────────────────────────────
-// Two pages. Page 0 ports remedy/config/pages/default.toml (CC toggles +
-// PC presets + nav). Page 1 demonstrates the SysEx path (amp types + preset
-// recall). Together they exercise every Action variant.
+// Five pages — the three CircuitPython preset pages (remedy/config/pages/
+// {default,daw-control,katana-live}.toml) plus the SysEx-Katana and USB-HID
+// demos. Every page now also carries its own encoder + expression-pedal
+// bindings (the `[encoder]` / `[expression]` TOML blocks), so navigation,
+// effects, and continuous controls are all per-page config data. Between them
+// they exercise every Action / CcValue / ContinuousBinding variant.
+//
+// Nav is uniform on every page: a short UP/DOWN tap steps the bank (program
+// ±1), a long press changes page — so a quick tap never pulls the page out from
+// under you. The model allows per-page nav variation (on_press/on_long_press
+// are independent per button); the baked default just keeps it consistent.
 
 /// Page 0 — generic MIDI controller (port of `default.toml`).
 const PAGE_DEFAULT: Page = Page {
@@ -358,9 +407,74 @@ const PAGE_DEFAULT: Page = Page {
         nav("BANK+", 1, Action::PageNext),
         nav("BANK-", -1, Action::PagePrev),
     ],
+    // Encoder = volume (CC7); pedal1 = mod wheel (CC1), pedal2 = volume (CC7) —
+    // ports default.toml's [encoder] / [expression] blocks.
+    encoder: ContinuousBinding::MidiCc(7),
+    expr: [ContinuousBinding::MidiCc(1), ContinuousBinding::MidiCc(7)],
 };
 
-/// Page 1 — Katana SysEx (amp types + channel recall).
+/// Page 1 — DAW / plugin control (port of `daw-control.toml`). Scene presets
+/// (radio group 1) over generic CC effect toggles; pedal1 on CC11 (expression).
+const PAGE_DAW: Page = Page {
+    name: "DAW Control",
+    buttons: [
+        // SW1..SW4 → scene/preset Program Changes, radio group 1.
+        radio("SCENE1", color::WHITE, Action::ProgramChange { program: 0 }, 1),
+        radio("SCENE2", color::WHITE, Action::ProgramChange { program: 1 }, 1),
+        radio("SCENE3", color::WHITE, Action::ProgramChange { program: 2 }, 1),
+        radio("SCENE4", color::WHITE, Action::ProgramChange { program: 3 }, 1),
+        // A..D → generic effect CC toggles (DAW plugin on/off).
+        button("DRIVE", color::GREEN, toggle(25)),
+        button("CHORUS", color::BLUE, toggle(26)),
+        button("DELAY", color::AMBER, toggle(27)),
+        button("REVERB", color::PURPLE, toggle(28)),
+        nav("BANK+", 1, Action::PageNext),
+        nav("BANK-", -1, Action::PagePrev),
+    ],
+    // Encoder = volume (CC7); pedal1 = expression (CC11), pedal2 = volume (CC7).
+    encoder: ContinuousBinding::MidiCc(7),
+    expr: [ContinuousBinding::MidiCc(11), ContinuousBinding::MidiCc(7)],
+};
+
+/// Page 2 — BOSS Katana live performance (port of `katana-live.toml`). Channel
+/// recall (radio group 1) + GA-FC-style effect CC toggles; the encoder drives
+/// the amp's master **volume** over SysEx and pedal1 drives the **wah**, exactly
+/// as the CP page's `sysex:volume` / `sysex:wah_position` binds did.
+const PAGE_KATANA_LIVE: Page = Page {
+    name: "Katana Live",
+    buttons: [
+        // SW1..SW4 → recall CH1..CH4 (Program Change 1..4), radio group 1.
+        radio("CH1", color::GREEN, Action::ProgramChange { program: 1 }, 1),
+        radio("CH2", color::AMBER, Action::ProgramChange { program: 2 }, 1),
+        radio("CH3", color::RED, Action::ProgramChange { program: 3 }, 1),
+        radio("CH4", color::PURPLE, Action::ProgramChange { program: 4 }, 1),
+        // A..D → GA-FC effect CC toggles (BOOST/MOD/DELAY/REVERB). D long-presses
+        // into the tuner (consistent with the other amp pages).
+        button("BOOST", color::GREEN, toggle(16)),
+        button("MOD", color::BLUE, toggle(17)),
+        button("DELAY", color::AMBER, toggle(19)),
+        ButtonConfig {
+            label: "REVERB",
+            color: color::PURPLE,
+            on_press: toggle(20),
+            on_long_press: Action::TunerToggle,
+            group: 0,
+        },
+        nav("BANK+", 1, Action::PageNext),
+        nav("BANK-", -1, Action::PagePrev),
+    ],
+    // Encoder = Katana master volume (SysEx); pedal1 = wah (SysEx), pedal2 =
+    // volume (CC7) — faithful to katana-live.toml.
+    encoder: ContinuousBinding::Sysex(ContinuousSysex::Volume),
+    expr: [
+        ContinuousBinding::Sysex(ContinuousSysex::Wah),
+        ContinuousBinding::MidiCc(7),
+    ],
+};
+
+/// Page 3 — Katana SysEx demo (amp types + channel recall over SysEx, two
+/// independent radio groups). Distinct from the CC-based "Katana Live" page —
+/// this one drives the amp directly via Roland SysEx.
 const PAGE_KATANA: Page = Page {
     name: "Katana",
     buttons: [
@@ -387,9 +501,16 @@ const PAGE_KATANA: Page = Page {
         nav("BANK+", 1, Action::PageNext),
         nav("BANK-", -1, Action::PagePrev),
     ],
+    // A Katana page → continuous controls drive the amp over SysEx: encoder =
+    // master volume, pedal1 = wah, pedal2 = volume (CC7).
+    encoder: ContinuousBinding::Sysex(ContinuousSysex::Volume),
+    expr: [
+        ContinuousBinding::Sysex(ContinuousSysex::Wah),
+        ContinuousBinding::MidiCc(7),
+    ],
 };
 
-/// Page 2 — USB-HID demo. Footswitches type on / send media keys to the host
+/// Page 4 — USB-HID demo. Footswitches type on / send media keys to the host
 /// (the device enumerates a keyboard + consumer-control HID interface alongside
 /// MIDI + CDC). Demonstrates plain keys, a modifier combo (Ctrl+Z), and
 /// consumer/media usages. UP/DOWN are the standard nav pair (long-press to
@@ -411,9 +532,21 @@ const PAGE_HID: Page = Page {
         nav("BANK+", 1, Action::PageNext),
         nav("BANK-", -1, Action::PagePrev),
     ],
+    // Keep the global default continuous bindings so the encoder/pedals still do
+    // something familiar on this page (a keyboard page has no natural binding).
+    encoder: ContinuousBinding::MidiCc(7),
+    expr: [ContinuousBinding::MidiCc(1), ContinuousBinding::MidiCc(7)],
 };
 
-const PAGES: [Page; 3] = [PAGE_DEFAULT, PAGE_KATANA, PAGE_HID];
+/// Boot order: the three CP preset pages, then the SysEx-Katana and HID demos.
+/// Order is just data — a user config can reorder/rename/replace freely.
+const PAGES: [Page; 5] = [
+    PAGE_DEFAULT,
+    PAGE_DAW,
+    PAGE_KATANA_LIVE,
+    PAGE_KATANA,
+    PAGE_HID,
+];
 
 /// Shared cycle pool. Cycle 0 (referenced by page-0 "LVL") steps CC 82 through
 /// three levels, with the long press resetting to the first.
@@ -557,9 +690,10 @@ pub const NAME_CAP: usize = 16;
 /// Worst-case postcard layout (every cap full, largest enum variants):
 /// - `RuntimeConfig` → `Vec<OwnedPage, MAX_PAGES>` + `ThruRoutes` + `Vec<CycleDef, MAX_CYCLES>`
 /// - `Vec<OwnedPage, MAX_PAGES>` → 1-byte length varint (`MAX_PAGES ≤ 127`) + pages
-/// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]`
+/// - `OwnedPage`  → `PageName` (1-byte len + `NAME_CAP`) + `[OwnedButton; PAGE_BUTTONS]` + 3 × `ContinuousBinding` (encoder + `expr[2]`)
 /// - `OwnedButton`→ `Label` (1-byte len + `LABEL_CAP`) + `LedColor` (3) + 2 × `Action` + `group` (1)
 /// - `Action`     → 1-byte discriminant + ≤4-byte payload (`Hid(Consumer{ usage: u16 })`)
+/// - `ContinuousBinding` → 1-byte discriminant + ≤1-byte payload (`MidiCc(u8)`)
 /// - `ThruRoutes` → 4 × `bool` (1 byte each)
 /// - `Vec<CycleDef, MAX_CYCLES>` → 1-byte length varint + cycles
 /// - `CycleDef`   → `Vec<StepAction, MAX_STEPS>` (1-byte len + steps) + `CycleLong` (1)
@@ -573,7 +707,13 @@ pub const MAX_SERIALIZED_LEN: usize = {
     // String<N> postcard-encodes as a 1-byte length (N ≤ 127) followed by N bytes.
     const BUTTON_MAX: usize =
         (1 + LABEL_CAP) + 3 /* LedColor r,g,b */ + 2 * ACTION_MAX + 1 /* group u8 */;
-    const PAGE_MAX: usize = (1 + NAME_CAP) + PAGE_BUTTONS * BUTTON_MAX;
+    // `ContinuousBinding`: disc(1) + largest payload. `MidiCc(u8)` = 1 and
+    // `Sysex(ContinuousSysex)` = sub-disc(1); both 1 → 2 bytes total.
+    const BINDING_MAX: usize = 1 + 1;
+    const PAGE_MAX: usize = (1 + NAME_CAP)
+        + PAGE_BUTTONS * BUTTON_MAX
+        + BINDING_MAX /* encoder */
+        + 2 * BINDING_MAX /* expr[2] */;
     const THRU_MAX: usize = 4; // ThruRoutes: 4 bools
     // `StepAction` disc(1) + largest payload (`MidiCc` cc(1)+value(1) = 2).
     const STEP_MAX: usize = 1 + 2;
@@ -610,6 +750,16 @@ pub struct OwnedButton {
 pub struct OwnedPage {
     pub name: PageName,
     pub buttons: [OwnedButton; PAGE_BUTTONS],
+    /// What the rotary encoder drives on this page.
+    ///
+    /// NOTE: serde/postcard serializes fields in declaration order — `encoder`
+    /// and `expr` are **appended** after `buttons`. Adding them is a breaking
+    /// wire change (an older blob lacks the trailing bytes per page and fails to
+    /// deserialize, falling back to the default on upgrade), so
+    /// [`crate::proto::PROTO_VERSION`] is bumped alongside them. Only append.
+    pub encoder: ContinuousBinding,
+    /// What each expression pedal drives on this page (`[pedal1, pedal2]`).
+    pub expr: [ContinuousBinding; 2],
 }
 
 /// MIDI-thru routing matrix — which inbound port is forwarded to which outbound
@@ -695,6 +845,8 @@ impl OwnedPage {
         Self {
             name: copy_str(p.name),
             buttons: core::array::from_fn(|i| OwnedButton::from_static(&p.buttons[i])),
+            encoder: p.encoder,
+            expr: p.expr,
         }
     }
 }

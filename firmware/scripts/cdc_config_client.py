@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 6  # v6: CcValue::Trigger(u8); v5: Action::Hid; v4: cycles pool + Action::Cycle; v3 group; v2 midi_thru
+PROTO_VERSION = 7  # v7: per-page encoder+expr ContinuousBinding; v6: CcValue::Trigger; v5: Action::Hid; v4: cycles+Action::Cycle; v3 group; v2 midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -278,6 +278,40 @@ def _enc_step(s: dict) -> bytes:
     raise ValueError(f"unknown step type {t!r}")
 
 
+# config::ContinuousBinding — per-page encoder / expression-pedal binding.
+_CONT_SYSEX = ["volume", "wah"]  # ContinuousSysex variant order
+
+
+def _dec_binding(r: _Reader) -> dict:
+    disc = r.varint()
+    if disc == 0:  # None
+        return {"bind": "none"}
+    if disc == 1:  # MidiCc(u8)
+        return {"bind": "cc", "cc": r.u8()}
+    if disc == 2:  # Sysex(ContinuousSysex)
+        return {"bind": "sysex", "param": _CONT_SYSEX[r.varint()]}
+    raise ValueError(f"unknown ContinuousBinding discriminant {disc}")
+
+
+def _enc_binding(b) -> bytes:
+    if not b or b.get("bind", "none") == "none":
+        return _varint_enc(0)
+    kind = b["bind"]
+    if kind == "cc":
+        return _varint_enc(1) + bytes([int(b["cc"])])
+    if kind == "sysex":
+        return _varint_enc(2) + _varint_enc(_CONT_SYSEX.index(b["param"]))
+    raise ValueError(f"unknown ContinuousBinding kind {kind!r}")
+
+
+def _fmt_binding(b) -> str:
+    if not b or b.get("bind", "none") == "none":
+        return "none"
+    if b["bind"] == "cc":
+        return f"cc{b['cc']}"
+    return f"sysex:{b['param']}"
+
+
 def decode_config(blob: bytes) -> dict:
     r = _Reader(blob)
     pages = []
@@ -297,7 +331,16 @@ def decode_config(blob: bytes) -> dict:
                 "on_long_press": on_long_press,
                 "group": group,
             })
-        pages.append({"name": name, "buttons": buttons})
+        # Per-page continuous bindings, appended after the buttons (OwnedPage
+        # field order): encoder, then expr[2].
+        encoder = _dec_binding(r)
+        expr = [_dec_binding(r), _dec_binding(r)]
+        pages.append({
+            "name": name,
+            "buttons": buttons,
+            "encoder": encoder,
+            "expr": expr,
+        })
     # ThruRoutes: 4 bools, appended after pages (RuntimeConfig field order).
     midi_thru = {field: bool(r.u8()) for field in THRU_FIELDS}
     # Cycle pool: Vec<CycleDef>, appended after midi_thru.
@@ -330,6 +373,12 @@ def encode_config(cfg: dict) -> bytes:
             out += _enc_action(b["on_press"])
             out += _enc_action(b["on_long_press"])
             out.append(int(b.get("group", 0)) & 0xFF)  # radio group (0 = ungrouped)
+        # Per-page continuous bindings after the buttons: encoder, then expr[2].
+        # Tolerate configs missing them (default to "none").
+        out += _enc_binding(p.get("encoder"))
+        pexpr = p.get("expr") or []
+        for k in range(2):
+            out += _enc_binding(pexpr[k] if k < len(pexpr) else None)
     # ThruRoutes: 4 bools after pages. Tolerate older configs missing the field.
     thru = cfg.get("midi_thru", {})
     for field in THRU_FIELDS:
@@ -398,6 +447,10 @@ def _print_config(cfg: dict) -> None:
                 else f"  long={b['on_long_press']}"
             grp = f"  group={b['group']}" if b.get("group") else ""
             print(f"    [{j}] {b['label']!r:>8}  rgb{tuple(b['color'])}  {act}{extra}{grp}")
+        exp = p.get("expr") or [None, None]
+        print(f"      enc={_fmt_binding(p.get('encoder'))}  "
+              f"exp=[{_fmt_binding(exp[0] if len(exp) > 0 else None)}, "
+              f"{_fmt_binding(exp[1] if len(exp) > 1 else None)}]")
     thru = cfg.get("midi_thru", {})
     on = [f for f in THRU_FIELDS if thru.get(f)]
     print(f"  midi_thru: {', '.join(on) if on else 'none'}")

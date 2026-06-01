@@ -154,6 +154,13 @@ pub fn set_volume(value: u8) -> Result<SysEx, SysExError> {
     dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x22], &[value])
 }
 
+/// Set the pedal/wah position (0..=100), addr `60 00 01 5D`. Used by a
+/// continuous expression-pedal binding ([`crate::config::ContinuousSysex::Wah`]).
+/// The caller scales its `0..=127` control value to `0..=100` first.
+pub fn set_wah_position(value: u8) -> Result<SysEx, SysExError> {
+    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x01, 0x5D], &[value])
+}
+
 /// Toggle the BOOST block on/off.
 pub fn set_boost(on: bool) -> Result<SysEx, SysExError> {
     dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x00, 0x30], &[on as u8])
