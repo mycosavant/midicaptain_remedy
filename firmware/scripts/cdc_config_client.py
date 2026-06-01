@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 7  # v7: per-page encoder+expr ContinuousBinding; v6: CcValue::Trigger; v5: Action::Hid; v4: cycles+Action::Cycle; v3 group; v2 midi_thru
+PROTO_VERSION = 8  # v8: Action::TapTempo; v7: per-page encoder+expr ContinuousBinding; v6: CcValue::Trigger; v5: Action::Hid; v4: cycles+Action::Cycle; v3 group; v2 midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -212,6 +212,8 @@ def _dec_action(r: _Reader) -> dict:
         if hdisc == 1:  # Consumer { usage: u16 } — postcard varint
             return {"type": "hid", "hid": "consumer", "usage": r.varint()}
         raise ValueError(f"unknown HidReport discriminant {hdisc}")
+    if disc == 11:  # TapTempo — no payload
+        return {"type": "tap_tempo"}
     raise ValueError(f"unknown Action discriminant {disc}")
 
 
@@ -252,6 +254,8 @@ def _enc_action(a: dict) -> bytes:
         if h == "consumer":  # Consumer { usage: u16 } — postcard varint
             return _varint_enc(10) + _varint_enc(1) + _varint_enc(a["usage"])
         raise ValueError(f"unknown hid report kind {h!r}")
+    if t == "tap_tempo":  # TapTempo — no payload
+        return _varint_enc(11)
     raise ValueError(f"unknown action type {t!r}")
 
 

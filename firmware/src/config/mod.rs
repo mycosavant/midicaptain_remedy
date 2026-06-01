@@ -218,6 +218,13 @@ pub enum Action {
     /// NOTE: append-only — see [`CcValue::Momentary`]. [`HidReport`] is itself
     /// append-only (see its docs).
     Hid(HidReport),
+    /// Tap tempo: each press marks a beat. The router measures the interval
+    /// between consecutive taps (within a musical window) and sets the connected
+    /// device's delay time — for v1 the Katana delay-time SysEx (`set_delay_time`,
+    /// `1..=2000 ms`). A lone tap does nothing (no interval yet); a too-long gap
+    /// restarts the count. The cell flashes per tap. A generic (MIDI-clock / CC)
+    /// target is a future extension. Append-only — see [`CcValue::Momentary`].
+    TapTempo,
 }
 
 impl Action {
@@ -453,10 +460,13 @@ const PAGE_KATANA_LIVE: Page = Page {
         button("BOOST", color::GREEN, toggle(16)),
         button("MOD", color::BLUE, toggle(17)),
         button("DELAY", color::AMBER, toggle(19)),
+        // Switch D ("switch 8", bottom-right) = tap tempo — easy to reach and
+        // pairs with DELAY on C. Long-press still drops into the tuner. Tap it a
+        // few times to set the Katana delay time; fully reconfigurable.
         ButtonConfig {
-            label: "REVERB",
+            label: "TAP",
             color: color::PURPLE,
-            on_press: toggle(20),
+            on_press: Action::TapTempo,
             on_long_press: Action::TunerToggle,
             group: 0,
         },

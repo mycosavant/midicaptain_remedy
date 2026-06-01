@@ -178,6 +178,9 @@ pub struct Router {
     momentary_active: [Option<u8>; buttons::COUNT],
     /// Encoder push timestamp, for its long-press (enter/exit the menu).
     enc_press_at: Option<Instant>,
+    /// Timestamp of the previous tap-tempo tap, for measuring the interval.
+    /// `None` until the first tap (or after a too-long gap resets the count).
+    tap_last: Option<Instant>,
     display: DisplaySender,
     leds: leds::LedSender,
     midi_cmd: mux::MidiCmdSender,
@@ -219,6 +222,7 @@ impl Router {
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
+            tap_last: None,
             display,
             leds,
             midi_cmd,
@@ -617,7 +621,35 @@ impl Router {
                 let _ = self.hid.try_send(report);
                 true
             }
+            // Tap tempo: mark a beat, set the delay time from the interval. The
+            // cell flashes per tap (transient — no persistent state).
+            Action::TapTempo => {
+                self.tap_tempo();
+                true
+            }
         }
+    }
+
+    /// One tap-tempo beat. Measures the interval since the previous tap and, if
+    /// it falls in a musical window (≈30–600 BPM), sets the Katana delay time to
+    /// that interval (SysEx). A first tap — or one after a > 2 s gap — just
+    /// (re)starts the count; a < 100 ms re-trigger is ignored as a bounce.
+    fn tap_tempo(&mut self) {
+        let now = Instant::now();
+        if let Some(last) = self.tap_last {
+            let dt = now.saturating_duration_since(last).as_millis() as u32;
+            if dt < 100 {
+                return; // debounce — keep the previous tap as the reference
+            }
+            if dt <= 2000 {
+                if let Ok(sx) = katana::set_delay_time(dt as u16) {
+                    let _ = self.sysex_out.try_send(sx);
+                }
+                defmt::info!("tap tempo: {=u32} ms ({=u32} bpm)", dt, 60_000 / dt);
+            }
+            // dt > 2000 ms → too slow; fall through to restart the count.
+        }
+        self.tap_last = Some(now);
     }
 
     /// Send a Control Change on the global MIDI channel.

@@ -27,6 +27,10 @@
 
 /// Protocol version, sent in `HELLO`. Bump on any breaking wire change.
 ///
+/// v8: `config::Action` gained the `TapTempo` variant (tap-tempo → Katana
+/// delay-time SysEx), appended after `Hid`. A v7 blob can't use it, but the
+/// discriminant space changed, so the version bumps to keep the webapp codec in
+/// lockstep.
 /// v7: `config::OwnedPage` gained per-page continuous-control bindings —
 /// `encoder: ContinuousBinding` and `expr: [ContinuousBinding; 2]`, appended
 /// after `buttons`. `ContinuousBinding` is `None | MidiCc(u8) | Sysex(
@@ -51,7 +55,7 @@
 /// v2: `config::RuntimeConfig` gained the `midi_thru` field (appended after
 /// `pages`), so a v1 config blob no longer round-trips — a breaking change to
 /// the GET/SET payload format.
-pub const PROTO_VERSION: u8 = 7;
+pub const PROTO_VERSION: u8 = 8;
 
 /// Largest config payload we carry — the postcard `RuntimeConfig` blob ceiling
 /// ([`config::MAX_SERIALIZED_LEN`]). Deriving it (rather than hardcoding) keeps
