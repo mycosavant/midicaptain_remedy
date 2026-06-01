@@ -168,6 +168,63 @@ Items 2–4 are largely independent and can run as parallel sessions /
 subagents *as long as* each keeps to its own files and integration into the
 router stays serial (one PR at a time touching `app.rs`).
 
+## Hardware findings — 2026-06-01 device-sync bench (next session, start here)
+
+Device sync's foundation is **merged and validated on real silicon**: #47
+(receive half — `parse_dt1` + `SYSEX_IN` routed), #48 (active half — RQ1 boot
+sweep), #49 (PWM backlight), #50 (`scripts/sysex_decode.py`). RTT confirms the
+sweep fires on boot (`device query: editor mode + 2 RQ1 read(s) sent`), and
+amp-type/preset reflect onto the **Katana** page (page 3) radios. The bench
+session surfaced two follow-ups — this is the live to-do.
+
+> GitHub Issues are **disabled** on this repo, so findings live here.
+
+### Finding 1 — effect toggles don't persist across page change / reboot
+
+On **Katana Live** (page 2) A–D are **CC toggles** (`toggle(16)` BOOST,
+`toggle(17)` MOD, `toggle(19)` DELAY — `config::PAGE_KATANA_LIVE`). Enable
+BOOST, change page and back → LED reads OFF, and it takes **two presses** to
+turn off (press 1 re-syncs local state ON, press 2 sends OFF). Three
+compounding causes:
+
+1. **Page change clears toggles** by design — `Router::change_page` does
+   `self.toggles = [false; 128]` (CLAUDE.md: "cleared on page change").
+2. **The sweep doesn't query effect blocks** — `DEVICE_QUERY_SWEEP` covers
+   only amp type + preset, not BOOST/MOD/DELAY/REVERB.
+3. **No CC↔SysEx bridge.** Effects here are *CC toggles* (CC 16/17/19), but
+   the amp reports block state as *SysEx DT1* at `60 00 00 30` (boost),
+   `60 00 01 40` (mod), `60 00 05 60` (delay), `60 00 06 10` (reverb) — see the
+   `set_boost/set_mod/...` builders. `reflect_sysex` has no path from a block
+   DT1 → a CC toggle. The CP firmware bridged these with `cc_alias` in
+   `remedy/config/profiles/katana.toml`; the Rust config has no equivalent.
+
+Recommended fix (continuation of #47/#48, the bulk of remaining device-sync):
+**(a)** re-sync on page entry — in `change_page`, re-issue the query for the
+params the new page uses (or keep a device-state cache and re-apply); **(b)**
+extend `DEVICE_QUERY_SWEEP` with the four block addresses and add a
+DT1-address → state bridge (e.g. a `SysexCmd::Block{…}` or address-keyed map so
+`reflect_sysex` can set `toggles[cc]` for the matching button). Also revisit
+whether device-backed toggles should survive a page change at all.
+
+### Finding 2 — encoder doesn't drive volume on Katana / Katana Live
+
+Both pages bind `encoder: ContinuousBinding::Sysex(ContinuousSysex::Volume)`.
+The code path *looks* correct: `on_encoder` (Performance) → `emit_continuous`
+→ `katana::set_volume(scaled)` → `sysex_out`. Needs on-hardware triage with
+`sysex_decode.py`:
+
+- `./scripts/midimon.ps1 -Format min-hex | python scripts/sysex_decode.py`,
+  turn the encoder:
+  - sees `DT1 set Volume = N` → firmware is right; the amp's master-volume
+    address (`00 00 04 22`) or required mode is the issue — adjust
+    `katana::set_volume`.
+  - sees nothing → encoder→router path: confirm `EncoderEvent::Turn` arrives
+    in `Mode::Performance` (RTT), the meter (`meter_values[2]`) moves, and
+    `enc_value` changes (emit is gated on `v != self.enc_value`).
+    `STEPS_PER_DETENT` was retuned to 2 in `4b5d644`.
+- Isolate input vs SysEx path: does the encoder drive **CC7** on a
+  `MidiCc(7)`-encoder page (the default page)?
+
 ## Invariants (do not violate)
 
 - **Target `main`** (see policy section above). One subsystem per PR,
