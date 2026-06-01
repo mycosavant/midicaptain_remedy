@@ -19,7 +19,7 @@ use defmt::warn;
 use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
-use embassy_time::{Duration, Instant};
+use embassy_time::{Duration, Instant, Timer};
 
 use crate::config::{self, Action, CcValue, CycleLong, RuntimeConfig, StepAction, SysexCmd};
 use crate::events::{
@@ -1110,6 +1110,40 @@ fn sysex_cmd_from_dt1(dt1: &katana::Dt1) -> Option<SysexCmd> {
         katana::ADDR_VOLUME => dt1.data.first().map(|&v| SysexCmd::Volume(v)),
         _ => None,
     }
+}
+
+/// One-shot boot device-state query (the *active* half of device sync). When
+/// the loaded config drives a Katana (`enabled`), this waits for USB/MIDI to
+/// settle, puts the amp into editor/BTS mode — so it both answers the RQ1 reads
+/// and broadcasts later front-panel changes — then sweeps an RQ1 read of the
+/// mirrored parameters ([`katana::DEVICE_QUERY_SWEEP`]). The amp's DT1 replies
+/// arrive on the inbound SysEx channel and are reflected onto the LEDs by
+/// [`Router::on_sysex_rx`]. Editor mode is left engaged on purpose — exiting it
+/// would stop the passive sync. A no-op (returns immediately) when not enabled.
+///
+/// Runs once and exits; it borrows only its own `SysExSender` (a `Copy` handle
+/// to the same outbound channel the router uses), so it needs no router state.
+#[embassy_executor::task]
+pub async fn device_query_task(sysex_out: mux::SysExSender, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    // Let enumeration / the amp's MIDI input settle before querying.
+    Timer::after(Duration::from_millis(1500)).await;
+    if let Ok(sx) = katana::enter_editor_mode() {
+        let _ = sysex_out.try_send(sx);
+    }
+    Timer::after(Duration::from_millis(100)).await; // CP `settle_time_ms`
+    for (addr, len) in katana::DEVICE_QUERY_SWEEP {
+        if let Ok(sx) = katana::rq1(&katana::KATANA_MODEL_ID, &addr, len) {
+            let _ = sysex_out.try_send(sx);
+        }
+        Timer::after(Duration::from_millis(20)).await; // CP inter-query delay
+    }
+    defmt::info!(
+        "device query: editor mode + {} RQ1 read(s) sent",
+        katana::DEVICE_QUERY_SWEEP.len()
+    );
 }
 
 /// Drive the router: select across every input channel, dispatch each event.

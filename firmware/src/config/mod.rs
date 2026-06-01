@@ -922,6 +922,19 @@ impl RuntimeConfig {
     pub fn cycle(&self, index: u8) -> Option<&CycleDef> {
         self.cycles.get(index as usize)
     }
+
+    /// `true` if any button on any page sends a Katana SysEx command. Used to
+    /// gate the boot-time device-state query — there's no point talking Roland
+    /// SysEx to a generic-CC rig. A config-free proxy for "this is a Katana
+    /// setup" (a future `query_device` config flag could make it explicit, but
+    /// that would change the wire format).
+    pub fn uses_katana_sysex(&self) -> bool {
+        self.pages.iter().any(|p| {
+            p.buttons.iter().any(|b| {
+                matches!(b.on_press, Action::Sysex(_)) || matches!(b.on_long_press, Action::Sysex(_))
+            })
+        })
+    }
 }
 
 impl Default for RuntimeConfig {

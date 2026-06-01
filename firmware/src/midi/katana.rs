@@ -51,6 +51,16 @@ pub const ADDR_GAIN: [u8; 4] = [0x00, 0x00, 0x04, 0x21];
 /// Master volume — data `[value]` (`0..=100`).
 pub const ADDR_VOLUME: [u8; 4] = [0x00, 0x00, 0x04, 0x22];
 
+/// Boot device-state query sweep: `(address, request-length)` pairs the
+/// firmware reads back from a Katana so the board can reflect the amp's current
+/// state. Scoped to the categories the app mirrors onto radio groups — **amp
+/// type** (1 byte) and **preset** (2 bytes, matching the CP profile's
+/// `query_length`). Mirrors `remedy/main.py::_query_device_state` (which swept
+/// each configured bool effect; the baked Katana page here uses amp-type /
+/// preset radios, so those are what we read). The DT1 replies are decoded by
+/// [`parse_dt1`] and reflected by `app::Router::on_sysex_rx`.
+pub const DEVICE_QUERY_SWEEP: [([u8; 4], u8); 2] = [(ADDR_AMP_TYPE, 1), (ADDR_RECALL_PRESET, 2)];
+
 /// Roland 7-bit checksum over `data`:
 /// `accum = sum(data) & 0x7F; (128 - accum) & 0x7F`.
 ///
