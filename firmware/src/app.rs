@@ -749,7 +749,8 @@ impl Router {
                     let outcome = self.menu.press();
                     self.apply_menu_outcome(outcome).await;
                 } else if matches!(self.mode, Mode::Edit) {
-                    let outcome = self.editor.press();
+                    let page = self.page;
+                    let outcome = self.editor.press(&mut self.config, page);
                     self.apply_edit_outcome(outcome).await;
                 }
             }
@@ -879,10 +880,10 @@ impl Router {
         self.refresh_page();
     }
 
-    /// Leave the editor: persist the edited config to flash (only if a change
-    /// was made — saves flash wear), then restore the performance page. The
-    /// edits are already live in `self.config`, so the repaint reflects them.
-    async fn leave_edit(&mut self) {
+    /// Persist the edited config to flash, but only if a change was made (saves
+    /// flash wear). The edits are already live in `self.config`. Shared by the
+    /// editor's HOME exit ([`Self::leave_edit`]) and its `< Back` step-out.
+    async fn persist_edits(&mut self) {
         if self.editor.dirty()
             && self
                 .storage
@@ -892,8 +893,25 @@ impl Router {
         {
             warn!("router: edit config save failed");
         }
+    }
+
+    /// Leave the editor (HOME): persist any edits, then restore the performance
+    /// page. The repaint reflects the now-live config.
+    async fn leave_edit(&mut self) {
+        self.persist_edits().await;
         self.mode = Mode::Performance;
         self.refresh_page();
+    }
+
+    /// Step out of the editor back to the settings menu (`< Back` at the top
+    /// level). Persists edits first so they survive even if the user then exits
+    /// the menu (whose own exit only saves settings, not config).
+    async fn back_to_menu(&mut self) {
+        self.persist_edits().await;
+        self.mode = Mode::Menu;
+        self.menu.enter();
+        let cmd = self.menu.display_cmd(&self.settings);
+        let _ = self.display.try_send(cmd);
     }
 
     async fn apply_menu_outcome(&mut self, outcome: MenuOutcome) {
@@ -926,6 +944,7 @@ impl Router {
                 let cmd = self.editor.display_cmd(&self.config, self.page);
                 let _ = self.display.try_send(cmd);
             }
+            EditOutcome::Back => self.back_to_menu().await,
             EditOutcome::Save => self.leave_edit().await,
         }
     }
