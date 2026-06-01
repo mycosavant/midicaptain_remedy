@@ -36,6 +36,21 @@ pub const OP_DT1: u8 = 0x12;
 /// RQ1 — *Data Request 1*: read/query a parameter.
 pub const OP_RQ1: u8 = 0x11;
 
+// ── Parameter addresses ────────────────────────────────────────────────
+// The address space the firmware touches, named once here so the outbound
+// builders and the inbound [`parse_dt1`] reverse-map share one definition
+// (no magic-number drift between send and receive). Ported from
+// `remedy/lib/midi.py`.
+
+/// Recall a preset — data `[0x00, preset]` (`0` = Panel, `1..=4` = CH1..CH4).
+pub const ADDR_RECALL_PRESET: [u8; 4] = [0x00, 0x01, 0x00, 0x00];
+/// Amp type — data `[amp_type]` (`0..=4`).
+pub const ADDR_AMP_TYPE: [u8; 4] = [0x00, 0x00, 0x04, 0x20];
+/// Gain — data `[value]` (`0..=100`).
+pub const ADDR_GAIN: [u8; 4] = [0x00, 0x00, 0x04, 0x21];
+/// Master volume — data `[value]` (`0..=100`).
+pub const ADDR_VOLUME: [u8; 4] = [0x00, 0x00, 0x04, 0x22];
+
 /// Roland 7-bit checksum over `data`:
 /// `accum = sum(data) & 0x7F; (128 - accum) & 0x7F`.
 ///
@@ -135,23 +150,23 @@ pub fn exit_editor_mode() -> Result<SysEx, SysExError> {
 
 /// Recall a preset: `0` = Panel, `1..=4` = CH1..CH4.
 pub fn recall_preset(preset: u8) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x00, 0x01, 0x00, 0x00], &[0x00, preset])
+    dt1(&KATANA_MODEL_ID, &ADDR_RECALL_PRESET, &[0x00, preset])
 }
 
 /// Set amp type: `0` = Acoustic, `1` = Clean, `2` = Crunch, `3` = Lead,
 /// `4` = Brown.
 pub fn set_amp_type(amp_type: u8) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x20], &[amp_type])
+    dt1(&KATANA_MODEL_ID, &ADDR_AMP_TYPE, &[amp_type])
 }
 
 /// Set gain (0..=100).
 pub fn set_gain(value: u8) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x21], &[value])
+    dt1(&KATANA_MODEL_ID, &ADDR_GAIN, &[value])
 }
 
 /// Set master volume (0..=100).
 pub fn set_volume(value: u8) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x00, 0x00, 0x04, 0x22], &[value])
+    dt1(&KATANA_MODEL_ID, &ADDR_VOLUME, &[value])
 }
 
 /// Set the pedal/wah position (0..=100), addr `60 00 01 5D`. Used by a
@@ -185,4 +200,60 @@ pub fn set_reverb(on: bool) -> Result<SysEx, SysExError> {
 pub fn set_delay_time(ms: u16) -> Result<SysEx, SysExError> {
     let encoded = encode_11bit(ms);
     dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x05, 0x62], &encoded)
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Inbound parsing — the receive half of device sync.
+// ───────────────────────────────────────────────────────────────────────
+
+/// A parsed inbound Roland **DT1** (*Data Set 1*) message: the 4-byte
+/// parameter address and its data payload (borrowed from the source buffer).
+/// Produced by [`parse_dt1`].
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct Dt1<'a> {
+    /// The 4-byte Roland parameter address (e.g. [`ADDR_AMP_TYPE`]).
+    pub address: [u8; 4],
+    /// The parameter data bytes (may be empty).
+    pub data: &'a [u8],
+}
+
+/// Parse a complete inbound Roland DT1 message of the form
+/// `F0 41 <dev> <model[4]> 12 <addr[4]> <data..> <cksum> F7`.
+///
+/// Returns the address + data iff the frame is a well-formed Roland **DT1**
+/// for `model_id` with a valid checksum (verified over `address ++ data`,
+/// the same region [`build_into`] signs). This is the exact inverse of the
+/// builders above, so anything they emit round-trips.
+///
+/// The device ID byte (`msg[2]`) is **not** matched: the amp answers with its
+/// own unit id, so any value is accepted. Anything that fails a structural or
+/// checksum check returns [`None`] (a foreign manufacturer's SysEx, an RQ1
+/// echo, a truncated frame, a corrupt payload) rather than mis-parsing.
+pub fn parse_dt1<'a>(msg: &'a [u8], model_id: &[u8; 4]) -> Option<Dt1<'a>> {
+    // Smallest valid frame (zero data bytes):
+    //   F0 41 dev m0 m1 m2 m3 12 a0 a1 a2 a3 cksum F7 = 14 bytes.
+    if msg.len() < 14 {
+        return None;
+    }
+    if msg[0] != SYSEX_START || msg[msg.len() - 1] != SYSEX_END {
+        return None;
+    }
+    if msg[1] != ROLAND_ID {
+        return None;
+    }
+    if msg[3..7] != *model_id {
+        return None;
+    }
+    if msg[7] != OP_DT1 {
+        return None;
+    }
+    // `body` = address(4) ++ data(n); the checksum sits just before `F7`.
+    let body = &msg[8..msg.len() - 2];
+    let checksum = msg[msg.len() - 2];
+    if roland_checksum(body) != checksum {
+        return None;
+    }
+    let mut address = [0u8; 4];
+    address.copy_from_slice(&body[..4]);
+    Some(Dt1 { address, data: &body[4..] })
 }

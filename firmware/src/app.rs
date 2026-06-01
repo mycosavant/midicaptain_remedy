@@ -193,6 +193,10 @@ pub struct Router {
     sysex_out: mux::SysExSender,
     /// Outbound USB-HID reports (keyboard / consumer control) → the HID task.
     hid: hid::HidSender,
+    /// Reply channel for config-sync requests, back to the CDC task. Owned here
+    /// (like the other output senders) so [`Self::handle_config_req`] answers in
+    /// place rather than the task loop juggling the response.
+    config_resp: ConfigRespSender,
 }
 
 impl Router {
@@ -209,6 +213,7 @@ impl Router {
         midi_cmd: mux::MidiCmdSender,
         sysex_out: mux::SysExSender,
         hid: hid::HidSender,
+        config_resp: ConfigRespSender,
     ) -> Self {
         Self {
             config,
@@ -235,6 +240,7 @@ impl Router {
             midi_cmd,
             sysex_out,
             hid,
+            config_resp,
         }
     }
 
@@ -789,6 +795,45 @@ impl Router {
         }
     }
 
+    /// Dispatch an inbound, reassembled SysEx message from the device. In
+    /// performance mode a recognised Katana DT1 (amp type / preset) updates the
+    /// matching radio-group selection, so the board reflects the amp's real
+    /// state — the SysEx analogue of [`Self::sync_cc`]. Other modes and
+    /// unrecognised messages are ignored (no echo, no allocation).
+    fn on_sysex_rx(&mut self, msg: sysex::SysEx) {
+        if !matches!(self.mode, Mode::Performance) {
+            return;
+        }
+        if let Some(cmd) =
+            katana::parse_dt1(&msg, &katana::KATANA_MODEL_ID).and_then(|d| sysex_cmd_from_dt1(&d))
+        {
+            self.reflect_sysex(cmd);
+        }
+    }
+
+    /// Reflect a device-reported [`SysexCmd`] onto the active page: select the
+    /// grouped button whose press emits that same command (radio sync), then
+    /// repaint. No-op if the page has no such grouped button, or it is already
+    /// the group's selection.
+    fn reflect_sysex(&mut self, cmd: SysexCmd) {
+        let found = {
+            let page = self.current_page();
+            page.buttons.iter().enumerate().find_map(|(i, b)| {
+                if b.on_press == Action::Sysex(cmd) {
+                    group_slot(b.group).map(|slot| (i as u8, slot))
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some((idx, slot)) = found {
+            if self.group_sel[slot] != Some(idx) {
+                self.group_sel[slot] = Some(idx);
+                self.refresh();
+            }
+        }
+    }
+
     /// Feed the tuner from the amp's Note On (which note) + Pitch Bend (cents).
     /// A Note Off — or a zero-velocity Note On — clears the readout.
     fn on_midi_rx_tuner(&mut self, m: MidiRx) {
@@ -974,6 +1019,14 @@ impl Router {
     }
 
     // ── config sync (webapp ↔ device over CDC) ─────────────────────────
+    /// Handle a config-sync request end-to-end: compute the response and send
+    /// it back over the owned [`Self::config_resp`] channel. The pure decision
+    /// logic stays in [`Self::on_config_req`].
+    async fn handle_config_req(&mut self, req: ConfigReq) {
+        let resp = self.on_config_req(req).await;
+        self.config_resp.send(resp).await;
+    }
+
     /// Service a config-sync request from the CDC task.
     ///
     /// `Get` returns a clone of the live config for the CDC task to serialize.
@@ -1043,12 +1096,29 @@ fn build_sysex(cmd: SysexCmd) -> Result<sysex::SysEx, sysex::SysExError> {
     }
 }
 
+/// Reverse-map an inbound Katana [`katana::Dt1`] to the [`SysexCmd`] a button
+/// would emit to produce it — the inverse of [`build_sysex`]. Only the four
+/// parameters the board can mirror as button state are decoded; any other
+/// address (or a too-short payload) yields [`None`]. Reflection onto the page
+/// is [`Router::reflect_sysex`]'s job — this is the pure decode.
+fn sysex_cmd_from_dt1(dt1: &katana::Dt1) -> Option<SysexCmd> {
+    match dt1.address {
+        katana::ADDR_AMP_TYPE => dt1.data.first().map(|&v| SysexCmd::AmpType(v)),
+        // `recall_preset` emits `[0x00, preset]`; the preset is the second byte.
+        katana::ADDR_RECALL_PRESET => dt1.data.get(1).map(|&p| SysexCmd::RecallPreset(p)),
+        katana::ADDR_GAIN => dt1.data.first().map(|&v| SysexCmd::Gain(v)),
+        katana::ADDR_VOLUME => dt1.data.first().map(|&v| SysexCmd::Volume(v)),
+        _ => None,
+    }
+}
+
 /// Drive the router: select across every input channel, dispatch each event.
 ///
-/// Five inputs, so the four hardware channels nest inside a [`select`] with the
-/// config-sync request channel (`embassy_futures` tops out at `select4`). The
-/// channel receive futures are cancellation-safe, so the branch that doesn't
-/// win simply re-arms next iteration with no lost messages.
+/// Six inputs, and `embassy_futures` tops out at [`select4`], so the four
+/// hardware channels nest inside an outer [`select`] whose other arm is itself
+/// a `select` over the two low-rate device channels (config-sync requests and
+/// inbound SysEx). All receive futures are cancellation-safe, so the branch
+/// that doesn't win simply re-arms next iteration with no lost messages.
 #[embassy_executor::task]
 pub async fn router_task(
     mut r: Router,
@@ -1057,7 +1127,7 @@ pub async fn router_task(
     expr: expression::ExprReceiver,
     midi_rx: mux::MidiRxReceiver,
     config_req: ConfigReqReceiver,
-    config_resp: ConfigRespSender,
+    sysex_in: mux::SysExReceiver,
 ) {
     r.refresh_page(); // initial paint
     r.sync_thru(); // publish the config's MIDI-thru routes to the mux
@@ -1070,7 +1140,7 @@ pub async fn router_task(
                 expr.receive(),
                 midi_rx.receive(),
             ),
-            config_req.receive(),
+            select(config_req.receive(), sysex_in.receive()),
         )
         .await
         {
@@ -1078,10 +1148,8 @@ pub async fn router_task(
             Either::First(Either4::Second(e)) => r.on_encoder(e).await,
             Either::First(Either4::Third(x)) => r.on_expr(x),
             Either::First(Either4::Fourth(m)) => r.on_midi_rx(m),
-            Either::Second(req) => {
-                let resp = r.on_config_req(req).await;
-                config_resp.send(resp).await;
-            }
+            Either::Second(Either::First(req)) => r.handle_config_req(req).await,
+            Either::Second(Either::Second(sx)) => r.on_sysex_rx(sx),
         }
     }
 }

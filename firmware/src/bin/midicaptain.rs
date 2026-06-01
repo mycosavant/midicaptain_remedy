@@ -290,6 +290,7 @@ async fn main(spawner: Spawner) {
         MIDI_CMD.sender(),
         SYSEX_OUT.sender(),
         HID_CH.sender(),
+        CONFIG_RESP_CH.sender(),
     );
     spawner.spawn(
         app::router_task(
@@ -299,7 +300,7 @@ async fn main(spawner: Spawner) {
             EXPR_CH.receiver(),
             MIDI_RX.receiver(),
             CONFIG_REQ_CH.receiver(),
-            CONFIG_RESP_CH.sender(),
+            SYSEX_IN.receiver(),
         )
         .unwrap(),
     );
