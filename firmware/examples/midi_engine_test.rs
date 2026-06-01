@@ -222,6 +222,35 @@ fn self_test() {
         "parse_dt1 accepted a truncated frame"
     );
 
+    // 1c. Effect-switch block DT1 → `cc_alias` bridge (device-sync receive half).
+    //     Each `set_<block>` builder round-trips through `parse_dt1` +
+    //     `effect_block_cc` to the GA-FC CC the Katana Live page toggles, mirroring
+    //     the CP `cc_alias`. A non-block address (amp type) is not an effect block.
+    for (built, want_cc) in [
+        (katana::set_boost(true), 16u8),
+        (katana::set_mod(true), 17),
+        (katana::set_delay(true), 19),
+        (katana::set_reverb(true), 20),
+    ] {
+        let sx = built.unwrap();
+        let d = katana::parse_dt1(sx.as_slice(), &katana::KATANA_MODEL_ID)
+            .expect("set_<block> should round-trip through parse_dt1");
+        defmt::assert!(
+            katana::effect_block_cc(&d.address) == Some(want_cc)
+                && d.data.len() == 1
+                && d.data[0] == 1,
+            "effect block did not bridge to its cc_alias (on)"
+        );
+    }
+    defmt::assert!(
+        katana::effect_block_cc(&katana::ADDR_AMP_TYPE).is_none(),
+        "amp-type address misidentified as an effect block"
+    );
+    // An "off" block carries data 0 — the bridge reads the data byte, not presence.
+    let off = katana::set_boost(false).unwrap();
+    let d = katana::parse_dt1(off.as_slice(), &katana::KATANA_MODEL_ID).unwrap();
+    defmt::assert!(d.data[0] == 0, "set_boost(false) should carry data 0");
+
     // 2. SysEx USB packetise → reassemble round-trips byte-for-byte.
     let delay = katana::set_delay_time(500).unwrap();
     let mut packets: heapless::Vec<[u8; 4], 96> = heapless::Vec::new();

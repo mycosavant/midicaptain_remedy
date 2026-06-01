@@ -51,15 +51,58 @@ pub const ADDR_GAIN: [u8; 4] = [0x00, 0x00, 0x04, 0x21];
 /// Master volume — data `[value]` (`0..=100`).
 pub const ADDR_VOLUME: [u8; 4] = [0x00, 0x00, 0x04, 0x22];
 
+// Effect-switch block on/off addresses — data `[0/1]`. Named here (rather than
+// inline in the `set_*` builders) so the builders and the [`EFFECT_BLOCKS`]
+// reverse-map share one definition. Ported from the `bool` parameters in
+// `remedy/config/profiles/katana.toml`.
+/// BOOST block on/off.
+pub const ADDR_BOOST_SW: [u8; 4] = [0x60, 0x00, 0x00, 0x30];
+/// MOD block on/off.
+pub const ADDR_MOD_SW: [u8; 4] = [0x60, 0x00, 0x01, 0x40];
+/// DELAY block on/off.
+pub const ADDR_DELAY_SW: [u8; 4] = [0x60, 0x00, 0x05, 0x60];
+/// REVERB block on/off.
+pub const ADDR_REVERB_SW: [u8; 4] = [0x60, 0x00, 0x06, 0x10];
+/// FX-LOOP block on/off.
+pub const ADDR_FX_LOOP_SW: [u8; 4] = [0x00, 0x00, 0x04, 0x00];
+
 /// Boot device-state query sweep: `(address, request-length)` pairs the
 /// firmware reads back from a Katana so the board can reflect the amp's current
 /// state. Scoped to the categories the app mirrors onto radio groups — **amp
 /// type** (1 byte) and **preset** (2 bytes, matching the CP profile's
 /// `query_length`). Mirrors `remedy/main.py::_query_device_state` (which swept
 /// each configured bool effect; the baked Katana page here uses amp-type /
-/// preset radios, so those are what we read). The DT1 replies are decoded by
+/// preset radios, so those are what we read). The effect-switch blocks are swept
+/// separately (via [`EFFECT_BLOCKS`]). The DT1 replies are decoded by
 /// [`parse_dt1`] and reflected by `app::Router::on_sysex_rx`.
 pub const DEVICE_QUERY_SWEEP: [([u8; 4], u8); 2] = [(ADDR_AMP_TYPE, 1), (ADDR_RECALL_PRESET, 2)];
+
+/// BOSS Katana effect-switch blocks that mirror onto a CC toggle, as
+/// `(block address, cc_alias)`. The `cc_alias` is the GA-FC CC number the amp
+/// uses for that on/off block — ported from the `cc_alias` fields on the `bool`
+/// parameters in `remedy/config/profiles/katana.toml`. One source of truth, two
+/// uses: the boot sweep RQ1-reads each address (so the toggles reflect the amp's
+/// state on connect), and an inbound block DT1 is reverse-mapped to its CC by
+/// [`effect_block_cc`] so `app::Router` can reflect the amp's real on/off onto
+/// the matching CC-toggle button (the CP `_sync_cc_to_toggle` path).
+pub const EFFECT_BLOCKS: [([u8; 4], u8); 5] = [
+    (ADDR_BOOST_SW, 16),
+    (ADDR_MOD_SW, 17),
+    (ADDR_DELAY_SW, 19),
+    (ADDR_REVERB_SW, 20),
+    (ADDR_FX_LOOP_SW, 21),
+];
+
+/// Reverse-map an inbound DT1 block address to its `cc_alias`, or [`None`] if the
+/// address is not a mirrored effect switch. The inverse of the [`EFFECT_BLOCKS`]
+/// table — used by `app::Router::on_sysex_rx` to bridge a Katana block DT1 to
+/// the CC toggle that drives it.
+pub fn effect_block_cc(address: &[u8; 4]) -> Option<u8> {
+    EFFECT_BLOCKS
+        .iter()
+        .find(|&&(addr, _)| addr == *address)
+        .map(|&(_, cc)| cc)
+}
 
 /// Roland 7-bit checksum over `data`:
 /// `accum = sum(data) & 0x7F; (128 - accum) & 0x7F`.
@@ -188,22 +231,22 @@ pub fn set_wah_position(value: u8) -> Result<SysEx, SysExError> {
 
 /// Toggle the BOOST block on/off.
 pub fn set_boost(on: bool) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x00, 0x30], &[on as u8])
+    dt1(&KATANA_MODEL_ID, &ADDR_BOOST_SW, &[on as u8])
 }
 
 /// Toggle the MOD block on/off.
 pub fn set_mod(on: bool) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x01, 0x40], &[on as u8])
+    dt1(&KATANA_MODEL_ID, &ADDR_MOD_SW, &[on as u8])
 }
 
 /// Toggle the DELAY block on/off.
 pub fn set_delay(on: bool) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x05, 0x60], &[on as u8])
+    dt1(&KATANA_MODEL_ID, &ADDR_DELAY_SW, &[on as u8])
 }
 
 /// Toggle the REVERB block on/off.
 pub fn set_reverb(on: bool) -> Result<SysEx, SysExError> {
-    dt1(&KATANA_MODEL_ID, &[0x60, 0x00, 0x06, 0x10], &[on as u8])
+    dt1(&KATANA_MODEL_ID, &ADDR_REVERB_SW, &[on as u8])
 }
 
 /// Set delay time in milliseconds (1..=2000), Roland 11-bit encoded.
