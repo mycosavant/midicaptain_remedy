@@ -177,12 +177,15 @@ pub enum DisplayCmd {
     Flash {
         index: u8,
     },
-    /// Settings-menu item view (single item at a time): its `title`, current
-    /// `value` rendered per `kind`, and whether it's being edited.
-    Menu {
-        title: &'static str,
-        value: u16,
-        kind: MenuKind,
+    /// Scrolling list view — the settings menu and the config editor. Carries a
+    /// `title`, the pre-formatted `rows` (built by the menu / editor), the
+    /// `selected` cursor row, and whether the cursor is being edited (the
+    /// [`crate::ui::ListView`] brightens it). Replaces the old one-item-at-a-time
+    /// `Menu`/`Edit` views with a denser multi-row display.
+    List {
+        title: ListLine,
+        rows: heapless::Vec<ListLine, LIST_MAX_ROWS>,
+        selected: u8,
         editing: bool,
     },
     /// Calibration-wizard step for `pedal` (`0`/`1`): the instruction and the
@@ -212,18 +215,14 @@ pub enum DisplayCmd {
         exp2: u8,
         encoder: u8,
     },
-    /// On-device config editor view (`Mode::Edit`). Two pre-formatted lines the
-    /// editor builds (`crate::editor::Editor::display_cmd`): a `title` (which
-    /// switch is being edited) and a `status` (the selected field + value). Uses
-    /// the same text screen as [`Self::Menu`] / [`Self::Cal`].
-    Edit {
-        title: EditLine,
-        status: EditLine,
-    },
 }
 
-/// A single pre-formatted line in the config-editor view ([`DisplayCmd::Edit`]).
-pub type EditLine = heapless::String<24>;
+/// A single pre-formatted line (title or row) in a [`DisplayCmd::List`] view.
+pub type ListLine = heapless::String<24>;
+/// Max rows a [`DisplayCmd::List`] snapshot carries (the [`crate::ui::ListView`]
+/// scrolls when the list is longer than it can show at once). Lives here, not in
+/// `ui`, because `events` is the lower layer (`ui` depends on it, not vice-versa).
+pub const LIST_MAX_ROWS: usize = 12;
 
 // Hand-written so the owned-string variants can format without depending on a
 // heapless `defmt` feature (and its defmt-version coupling). The `&str` fields
@@ -235,12 +234,19 @@ impl defmt::Format for DisplayCmd {
                 defmt::write!(f, "Page({=str} {}/{} pc={})", name.as_str(), index, total, program)
             }
             DisplayCmd::Flash { index } => defmt::write!(f, "Flash(#{})", index),
-            DisplayCmd::Menu {
+            DisplayCmd::List {
                 title,
-                value,
-                kind,
+                rows,
+                selected,
                 editing,
-            } => defmt::write!(f, "Menu({=str} {} {} editing={})", *title, value, kind, editing),
+            } => defmt::write!(
+                f,
+                "List({=str} [{}] sel={} editing={})",
+                title.as_str(),
+                rows.len(),
+                selected,
+                editing
+            ),
             DisplayCmd::Cal { pedal, step, raw } => {
                 defmt::write!(f, "Cal(p{} {} raw={})", pedal, step, raw)
             }
@@ -250,22 +256,8 @@ impl defmt::Format for DisplayCmd {
             DisplayCmd::Meters { exp1, exp2, encoder } => {
                 defmt::write!(f, "Meters(e1={} e2={} enc={})", exp1, exp2, encoder)
             }
-            DisplayCmd::Edit { title, status } => {
-                defmt::write!(f, "Edit({=str} | {=str})", title.as_str(), status.as_str())
-            }
         }
     }
-}
-
-/// How a [`DisplayCmd::Menu`] value is rendered.
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum MenuKind {
-    /// Plain integer (e.g. MIDI channel).
-    Int,
-    /// Percentage (append `%`).
-    Percent,
-    /// No value — an action item (e.g. "Cal Pedal 1", "Exit").
-    Action,
 }
 
 /// Which step of the calibration wizard a [`DisplayCmd::Cal`] is showing.

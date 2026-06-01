@@ -10,7 +10,9 @@
 //! Items: MIDI channel, LED brightness, calibrate pedal 1, calibrate pedal
 //! 2, exit. (Display-brightness — needing a PWM backlight — is a follow-up.)
 
-use crate::events::{CalStep, DisplayCmd, MenuKind};
+use core::fmt::Write as _;
+
+use crate::events::{CalStep, DisplayCmd, ListLine, LIST_MAX_ROWS};
 use crate::hal::expression::{self, CalPhase, Calibration, CalibrationWizard};
 use crate::storage::{PedalCal, Settings};
 
@@ -147,15 +149,29 @@ impl Menu {
                 raw: current_raw(pedal),
             };
         }
-        let (value, kind) = match self.selected {
-            ITEM_MIDI => (s.midi_channel as u16, MenuKind::Int),
-            ITEM_LED => (s.led_brightness as u16, MenuKind::Percent),
-            _ => (0, MenuKind::Action),
-        };
-        DisplayCmd::Menu {
-            title: LABELS[self.selected],
-            value,
-            kind,
+        // Build the full item list (value-formatted) for the scrolling view.
+        let mut rows: heapless::Vec<ListLine, LIST_MAX_ROWS> = heapless::Vec::new();
+        for (i, &label) in LABELS.iter().enumerate() {
+            let mut row = ListLine::new();
+            match i {
+                ITEM_MIDI => {
+                    let _ = write!(row, "{}: {}", label, s.midi_channel);
+                }
+                ITEM_LED => {
+                    let _ = write!(row, "{}: {}%", label, s.led_brightness);
+                }
+                _ => {
+                    let _ = row.push_str(label);
+                }
+            }
+            let _ = rows.push(row);
+        }
+        let mut title = ListLine::new();
+        let _ = title.push_str("SETTINGS");
+        DisplayCmd::List {
+            title,
+            rows,
+            selected: self.selected as u8,
             editing: self.editing,
         }
     }
