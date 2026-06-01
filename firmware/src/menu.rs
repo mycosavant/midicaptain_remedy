@@ -18,14 +18,16 @@ const ITEM_MIDI: usize = 0;
 const ITEM_LED: usize = 1;
 const ITEM_CAL1: usize = 2;
 const ITEM_CAL2: usize = 3;
-const ITEM_EXIT: usize = 4;
-const ITEM_COUNT: usize = 5;
+const ITEM_EDIT: usize = 4;
+const ITEM_EXIT: usize = 5;
+const ITEM_COUNT: usize = 6;
 
 const LABELS: [&str; ITEM_COUNT] = [
     "MIDI Channel",
     "LED Bright",
     "Cal Pedal 1",
     "Cal Pedal 2",
+    "Edit Page",
     "Exit",
 ];
 
@@ -37,6 +39,8 @@ pub enum MenuOutcome {
     Exit,
     /// A calibration completed: apply it live to the sampler and persist.
     CalSaved([Calibration; expression::PEDAL_COUNT]),
+    /// Enter the on-device config editor for the current page.
+    EnterEdit,
 }
 
 /// Settings-menu state machine.
@@ -102,6 +106,7 @@ impl Menu {
                 self.wizard.start(1);
                 MenuOutcome::Redraw
             }
+            ITEM_EDIT => MenuOutcome::EnterEdit,
             ITEM_EXIT => MenuOutcome::Exit,
             _ => MenuOutcome::Redraw,
         }

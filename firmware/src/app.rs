@@ -26,6 +26,7 @@ use crate::events::{
     ButtonEvent, Cell, CellState, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd,
     MidiRx,
 };
+use crate::editor::{EditOutcome, Editor};
 use crate::hal::{buttons, encoder, expression, hid, leds};
 use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
@@ -118,6 +119,9 @@ enum Mode {
     /// Note/Pitch-Bend update it. Any footswitch release — or an encoder
     /// hold — leaves back to performance.
     Tuner,
+    /// On-device config editor: a footswitch picks the switch to edit; the
+    /// encoder navigates/changes its fields; an encoder hold saves + exits.
+    Edit,
 }
 
 /// Direction a cycle button's press moves through its states.
@@ -144,12 +148,18 @@ pub struct Router {
     config_scratch: &'static mut [u8],
     mode: Mode,
     menu: Menu,
+    /// On-device config editor cursor (active in [`Mode::Edit`]).
+    editor: Editor,
     /// Tuner readout (driven by inbound MIDI while in [`Mode::Tuner`]).
     tuner: TunerState,
     /// Accumulated encoder-driven value (`0..=127`), emitted per the active
     /// page's [`config::ContinuousBinding`] encoder binding. A single relative
     /// accumulator shared across pages (not reset on page change).
     enc_value: u8,
+    /// Latest level (`0..=127`) of each continuous control for the on-screen
+    /// meters: `[EXP1, EXP2, encoder]`. Pushed to the display on change (see
+    /// [`Self::send_meters`]); `[2]` mirrors [`Self::enc_value`].
+    meter_values: [u8; 3],
     /// Current program number, for [`Action::ProgramChangeStep`] (inc/dec).
     /// Set by any absolute [`Action::ProgramChange`]; stepped by inc/dec.
     current_program: u8,
@@ -174,6 +184,9 @@ pub struct Router {
     momentary_active: [Option<u8>; buttons::COUNT],
     /// Encoder push timestamp, for its long-press (enter/exit the menu).
     enc_press_at: Option<Instant>,
+    /// Timestamp of the previous tap-tempo tap, for measuring the interval.
+    /// `None` until the first tap (or after a too-long gap resets the count).
+    tap_last: Option<Instant>,
     display: DisplaySender,
     leds: leds::LedSender,
     midi_cmd: mux::MidiCmdSender,
@@ -205,8 +218,10 @@ impl Router {
             config_scratch,
             mode: Mode::Performance,
             menu: Menu::new(),
+            editor: Editor::new(),
             tuner: TunerState::new(),
             enc_value: 0,
+            meter_values: [0; 3],
             current_program: 0,
             toggles: [false; 128],
             group_sel: [None; config::MAX_GROUPS],
@@ -214,6 +229,7 @@ impl Router {
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
             enc_press_at: None,
+            tap_last: None,
             display,
             leds,
             midi_cmd,
@@ -376,6 +392,13 @@ impl Router {
             Mode::Tuner => {
                 if !ev.pressed {
                     self.exit_tuner();
+                }
+            }
+            // In the editor a footswitch press picks the switch being edited.
+            Mode::Edit => {
+                if ev.pressed {
+                    let outcome = self.editor.footswitch(ev.index as usize);
+                    self.apply_edit_outcome(outcome).await;
                 }
             }
         }
@@ -612,13 +635,53 @@ impl Router {
                 let _ = self.hid.try_send(report);
                 true
             }
+            // Tap tempo: mark a beat, set the delay time from the interval. The
+            // cell flashes per tap (transient — no persistent state).
+            Action::TapTempo => {
+                self.tap_tempo();
+                true
+            }
         }
+    }
+
+    /// One tap-tempo beat. Measures the interval since the previous tap and, if
+    /// it falls in a musical window (≈30–600 BPM), sets the Katana delay time to
+    /// that interval (SysEx). A first tap — or one after a > 2 s gap — just
+    /// (re)starts the count; a < 100 ms re-trigger is ignored as a bounce.
+    fn tap_tempo(&mut self) {
+        let now = Instant::now();
+        if let Some(last) = self.tap_last {
+            let dt = now.saturating_duration_since(last).as_millis() as u32;
+            if dt < 100 {
+                return; // debounce — keep the previous tap as the reference
+            }
+            if dt <= 2000 {
+                if let Ok(sx) = katana::set_delay_time(dt as u16) {
+                    let _ = self.sysex_out.try_send(sx);
+                }
+                defmt::info!("tap tempo: {=u32} ms ({=u32} bpm)", dt, 60_000 / dt);
+            }
+            // dt > 2000 ms → too slow; fall through to restart the count.
+        }
+        self.tap_last = Some(now);
     }
 
     /// Send a Control Change on the global MIDI channel.
     fn send_cc(&self, cc: u8, value: u8) {
         let channel = self.wire_channel();
         let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
+    }
+
+    /// Push the live meter levels to the display as a screen-neutral overlay.
+    /// `try_send` (latest-wins; a full queue just drops the intermediate frame,
+    /// the next change re-sends). Only called in performance mode, and the
+    /// display task additionally ignores it unless the grid is showing.
+    fn send_meters(&self) {
+        let _ = self.display.try_send(DisplayCmd::Meters {
+            exp1: self.meter_values[0],
+            exp2: self.meter_values[1],
+            encoder: self.meter_values[2],
+        });
     }
 
     /// Emit a continuous-control value (`0..=127` — from the encoder or an
@@ -657,6 +720,8 @@ impl Router {
                     if v != self.enc_value {
                         self.enc_value = v;
                         self.emit_continuous(binding, v);
+                        self.meter_values[2] = v;
+                        self.send_meters();
                     }
                 }
                 Mode::Menu => {
@@ -665,6 +730,11 @@ impl Router {
                 }
                 // The tuner is read-only; rotation does nothing.
                 Mode::Tuner => {}
+                Mode::Edit => {
+                    let page = self.page;
+                    let outcome = self.editor.turn(delta, &mut self.config, page);
+                    self.apply_edit_outcome(outcome).await;
+                }
             },
             EncoderEvent::Press => self.enc_press_at = Some(Instant::now()),
             EncoderEvent::Release => {
@@ -678,18 +748,23 @@ impl Router {
                 } else if matches!(self.mode, Mode::Menu) {
                     let outcome = self.menu.press();
                     self.apply_menu_outcome(outcome).await;
+                } else if matches!(self.mode, Mode::Edit) {
+                    let outcome = self.editor.press();
+                    self.apply_edit_outcome(outcome).await;
                 }
             }
         }
     }
 
-    fn on_expr(&self, ev: ExprEvent) {
+    fn on_expr(&mut self, ev: ExprEvent) {
         // Pedals are silent in the menu — they're being moved for calibration.
         if !matches!(self.mode, Mode::Performance) {
             return;
         }
         let pedal = (ev.pedal as usize).min(1);
         self.emit_continuous(self.current_page().expr[pedal], ev.value);
+        self.meter_values[pedal] = ev.value;
+        self.send_meters();
     }
 
     /// Dispatch inbound device MIDI. In the tuner it drives the pitch readout;
@@ -746,6 +821,7 @@ impl Router {
             Mode::Performance => self.enter_menu(),
             Mode::Menu => self.leave_menu().await,
             Mode::Tuner => self.exit_tuner(),
+            Mode::Edit => self.leave_edit().await,
         }
     }
 
@@ -754,6 +830,14 @@ impl Router {
         self.mode = Mode::Menu;
         self.menu.enter();
         let cmd = self.menu.display_cmd(&self.settings);
+        let _ = self.display.try_send(cmd);
+    }
+
+    /// Enter the on-device config editor for the current page.
+    fn enter_edit(&mut self) {
+        self.mode = Mode::Edit;
+        self.editor.enter();
+        let cmd = self.editor.display_cmd(&self.config, self.page);
         let _ = self.display.try_send(cmd);
     }
 
@@ -795,6 +879,23 @@ impl Router {
         self.refresh_page();
     }
 
+    /// Leave the editor: persist the edited config to flash (only if a change
+    /// was made — saves flash wear), then restore the performance page. The
+    /// edits are already live in `self.config`, so the repaint reflects them.
+    async fn leave_edit(&mut self) {
+        if self.editor.dirty()
+            && self
+                .storage
+                .store_config(&self.config, self.config_scratch)
+                .await
+                .is_err()
+        {
+            warn!("router: edit config save failed");
+        }
+        self.mode = Mode::Performance;
+        self.refresh_page();
+    }
+
     async fn apply_menu_outcome(&mut self, outcome: MenuOutcome) {
         match outcome {
             MenuOutcome::Redraw => {
@@ -809,6 +910,23 @@ impl Router {
                 let cmd = self.menu.display_cmd(&self.settings);
                 let _ = self.display.try_send(cmd);
             }
+            MenuOutcome::EnterEdit => {
+                // Persist any settings the user changed first, then open the
+                // editor on the current page.
+                self.save().await;
+                self.enter_edit();
+            }
+        }
+    }
+
+    /// Service an editor interaction: repaint the editor view, or save + leave.
+    async fn apply_edit_outcome(&mut self, outcome: EditOutcome) {
+        match outcome {
+            EditOutcome::Redraw => {
+                let cmd = self.editor.display_cmd(&self.config, self.page);
+                let _ = self.display.try_send(cmd);
+            }
+            EditOutcome::Save => self.leave_edit().await,
         }
     }
 

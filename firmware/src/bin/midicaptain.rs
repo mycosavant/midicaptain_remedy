@@ -627,7 +627,11 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
         let want = match cmd {
             DisplayCmd::Tuner { .. } => Screen::Tuner,
             DisplayCmd::Page { .. } | DisplayCmd::Flash { .. } => Screen::Grid,
-            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } => Screen::Text,
+            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } | DisplayCmd::Edit { .. } => {
+                Screen::Text
+            }
+            // Meters overlay the grid — screen-neutral; never switch for them.
+            DisplayCmd::Meters { .. } => screen,
         };
         if want != screen {
             let _ = display.clear(Palette::BLACK.to_rgb565());
@@ -691,6 +695,21 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
             DisplayCmd::Tuner { note, cents } => {
                 tuner.set(note, cents);
                 let _ = tuner.render(&mut display);
+            }
+            DisplayCmd::Meters { exp1, exp2, encoder } => {
+                // Overlay-only: apply just while the grid is showing, so a meter
+                // update arriving right after a mode switch can't repaint over
+                // the menu/tuner.
+                if screen == Screen::Grid {
+                    grid.set_meters(exp1, exp2, encoder);
+                    let _ = grid.render(&mut display);
+                }
+            }
+            DisplayCmd::Edit { title: t, status: s } => {
+                title.set_text(&t);
+                let _ = title.render(&mut display);
+                status.set_text(&s);
+                let _ = status.render(&mut display);
             }
         }
     }

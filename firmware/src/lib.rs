@@ -14,6 +14,7 @@
 pub mod app;
 pub mod config;
 pub mod display;
+pub mod editor;
 pub mod events;
 pub mod hal;
 pub mod menu;

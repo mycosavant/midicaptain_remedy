@@ -51,6 +51,8 @@ fn sample_config() -> RuntimeConfig {
         config::ContinuousBinding::None,
         config::ContinuousBinding::Sysex(config::ContinuousSysex::Wah),
     ];
+    // Exercise the TapTempo action (payload-less) through the round-trip.
+    cfg.pages[0].buttons[4].on_press = Action::TapTempo;
     // Exercise the radio-group field (Tier 3) through the round-trip too.
     cfg.pages[0].buttons[1].group = config::MAX_GROUPS as u8;
     // Exercise the HID action variant (Tier 5): a Ctrl+Shift keystroke and a

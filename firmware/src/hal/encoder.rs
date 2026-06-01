@@ -62,11 +62,14 @@ use embassy_time::{Duration, Instant, Timer};
 
 use crate::events::EncoderEvent;
 
-/// Quadrature transitions per mechanical detent. Standard detented
-/// encoders complete one full Gray-code cycle (4 edges) between adjacent
-/// detents. Lower this to `2` or `1` for the rare half-/quarter-detent
-/// part.
-pub const STEPS_PER_DETENT: i8 = 4;
+/// Quadrature transitions per mechanical detent. Many detented encoders
+/// complete a full Gray-code cycle (4 edges) between detents, but **this
+/// board's encoder presents only 2 transitions per detent** — with `4` it took
+/// two physical clicks to advance one value (the resolution looked halved,
+/// confirmed on hardware 2026-06-01). `2` makes one detent emit one
+/// [`EncoderEvent::Turn`]. Raise back to `4` only for a full-cycle-per-detent
+/// part; `1` would be a quarter-detent part.
+pub const STEPS_PER_DETENT: i8 = 2;
 
 /// Push-button debounce window. 8 ms sits comfortably past typical tactile
 /// contact bounce (≈1–5 ms) while staying well under human perception, so

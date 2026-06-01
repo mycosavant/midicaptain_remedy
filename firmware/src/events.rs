@@ -201,7 +201,29 @@ pub enum DisplayCmd {
         note: Option<u8>,
         cents: i16,
     },
+    /// Live continuous-control levels (`0..=127`) for the on-screen meters: the
+    /// two expression pedals and the encoder. **Screen-neutral** — it overlays
+    /// the performance grid and never switches the active screen; the display
+    /// task only applies it while the grid is showing. Sent by the router on
+    /// each expr/encoder change in performance mode. The `PageGrid` widget draws
+    /// these in reserved edge/footer lanes (see `ui::page_grid`).
+    Meters {
+        exp1: u8,
+        exp2: u8,
+        encoder: u8,
+    },
+    /// On-device config editor view (`Mode::Edit`). Two pre-formatted lines the
+    /// editor builds (`crate::editor::Editor::display_cmd`): a `title` (which
+    /// switch is being edited) and a `status` (the selected field + value). Uses
+    /// the same text screen as [`Self::Menu`] / [`Self::Cal`].
+    Edit {
+        title: EditLine,
+        status: EditLine,
+    },
 }
+
+/// A single pre-formatted line in the config-editor view ([`DisplayCmd::Edit`]).
+pub type EditLine = heapless::String<24>;
 
 // Hand-written so the owned-string variants can format without depending on a
 // heapless `defmt` feature (and its defmt-version coupling). The `&str` fields
@@ -224,6 +246,12 @@ impl defmt::Format for DisplayCmd {
             }
             DisplayCmd::Tuner { note, cents } => {
                 defmt::write!(f, "Tuner(note={} cents={})", note, cents)
+            }
+            DisplayCmd::Meters { exp1, exp2, encoder } => {
+                defmt::write!(f, "Meters(e1={} e2={} enc={})", exp1, exp2, encoder)
+            }
+            DisplayCmd::Edit { title, status } => {
+                defmt::write!(f, "Edit({=str} | {=str})", title.as_str(), status.as_str())
             }
         }
     }
