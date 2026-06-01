@@ -107,6 +107,10 @@ fn max_config() -> RuntimeConfig {
     let page = OwnedPage {
         name: fill_name(),
         buttons: core::array::from_fn(|_| button.clone()),
+        // Largest `ContinuousBinding` (2 bytes each) so the blob hits
+        // `MAX_SERIALIZED_LEN` exactly, not just an under-filled bound.
+        encoder: config::ContinuousBinding::MidiCc(127),
+        expr: [config::ContinuousBinding::MidiCc(127); 2],
     };
     let mut pages: Vec<OwnedPage, { config::MAX_PAGES }> = Vec::new();
     for _ in 0..config::MAX_PAGES {

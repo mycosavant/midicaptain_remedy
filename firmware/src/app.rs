@@ -39,13 +39,6 @@ use crate::tuner::TunerState;
 /// the settings menu).
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
-/// CC the encoder drives (volume), and the per-pedal expression CCs —
-/// matching `remedy/config/pages/default.toml` (`encoder.fallback.cc = 7`,
-/// `pedal1.cc = 1`, `pedal2.cc = 7`). A later config extension makes these
-/// per-page bindings; baked in for v1.
-const ENCODER_CC: u8 = 7;
-const EXPR_CC: [u8; 2] = [1, 7];
-
 /// CC that toggles the connected device's tuner. CC#25 = 127 enters, 0 exits
 /// (matches `remedy/lib/tuner.py`'s default `toggle_cc`). The amp then streams
 /// Note On + Pitch Bend back, which drives the [`TunerState`].
@@ -153,7 +146,9 @@ pub struct Router {
     menu: Menu,
     /// Tuner readout (driven by inbound MIDI while in [`Mode::Tuner`]).
     tuner: TunerState,
-    /// Accumulated encoder-driven value for [`ENCODER_CC`] (`0..=127`).
+    /// Accumulated encoder-driven value (`0..=127`), emitted per the active
+    /// page's [`config::ContinuousBinding`] encoder binding. A single relative
+    /// accumulator shared across pages (not reset on page change).
     enc_value: u8,
     /// Current program number, for [`Action::ProgramChangeStep`] (inc/dec).
     /// Set by any absolute [`Action::ProgramChange`]; stepped by inc/dec.
@@ -626,19 +621,42 @@ impl Router {
         let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value });
     }
 
+    /// Emit a continuous-control value (`0..=127` — from the encoder or an
+    /// expression pedal) per the active page's [`config::ContinuousBinding`]:
+    /// a CC carrying the value verbatim, or a Katana SysEx with the value scaled
+    /// to the parameter's `0..=100` range. `None` → silent. Sends only; no state.
+    fn emit_continuous(&self, binding: config::ContinuousBinding, value: u8) {
+        match binding {
+            config::ContinuousBinding::None => {}
+            config::ContinuousBinding::MidiCc(cc) => {
+                let channel = self.wire_channel();
+                let _ = self
+                    .midi_cmd
+                    .try_send(MidiCmd::ControlChange { channel, cc, value });
+            }
+            config::ContinuousBinding::Sysex(param) => {
+                let scaled = ((value as u16 * 100) / 127) as u8; // 0..127 → 0..100
+                let sx = match param {
+                    config::ContinuousSysex::Volume => katana::set_volume(scaled),
+                    config::ContinuousSysex::Wah => katana::set_wah_position(scaled),
+                };
+                if let Ok(sx) = sx {
+                    let _ = self.sysex_out.try_send(sx);
+                }
+            }
+        }
+    }
+
     async fn on_encoder(&mut self, ev: EncoderEvent) {
         match ev {
             EncoderEvent::Turn(delta) => match self.mode {
                 Mode::Performance => {
+                    // Copy the binding out (it's `Copy`) before mutating state.
+                    let binding = self.current_page().encoder;
                     let v = (self.enc_value as i16 + delta as i16).clamp(0, 127) as u8;
                     if v != self.enc_value {
                         self.enc_value = v;
-                        let channel = self.wire_channel();
-                        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-                            channel,
-                            cc: ENCODER_CC,
-                            value: v,
-                        });
+                        self.emit_continuous(binding, v);
                     }
                 }
                 Mode::Menu => {
@@ -670,13 +688,8 @@ impl Router {
         if !matches!(self.mode, Mode::Performance) {
             return;
         }
-        let cc = EXPR_CC[(ev.pedal as usize).min(1)];
-        let channel = self.wire_channel();
-        let _ = self.midi_cmd.try_send(MidiCmd::ControlChange {
-            channel,
-            cc,
-            value: ev.value,
-        });
+        let pedal = (ev.pedal as usize).min(1);
+        self.emit_continuous(self.current_page().expr[pedal], ev.value);
     }
 
     /// Dispatch inbound device MIDI. In the tuner it drives the pitch readout;

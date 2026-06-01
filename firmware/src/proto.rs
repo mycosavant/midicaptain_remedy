@@ -27,6 +27,12 @@
 
 /// Protocol version, sent in `HELLO`. Bump on any breaking wire change.
 ///
+/// v7: `config::OwnedPage` gained per-page continuous-control bindings —
+/// `encoder: ContinuousBinding` and `expr: [ContinuousBinding; 2]`, appended
+/// after `buttons`. `ContinuousBinding` is `None | MidiCc(u8) | Sysex(
+/// ContinuousSysex)` (the encoder/pedal CCs, previously global consts in
+/// `app.rs`, are now per-page config). A v6 blob lacks the trailing per-page
+/// bytes and no longer round-trips.
 /// v6: `config::CcValue` gained the `Trigger(u8)` variant (self-toggling
 /// devices — send a fixed value every press; appended after `Momentary`). A v5
 /// blob that uses `Trigger` can't exist, but the discriminant space changed, so
@@ -45,7 +51,7 @@
 /// v2: `config::RuntimeConfig` gained the `midi_thru` field (appended after
 /// `pages`), so a v1 config blob no longer round-trips — a breaking change to
 /// the GET/SET payload format.
-pub const PROTO_VERSION: u8 = 6;
+pub const PROTO_VERSION: u8 = 7;
 
 /// Largest config payload we carry — the postcard `RuntimeConfig` blob ceiling
 /// ([`config::MAX_SERIALIZED_LEN`]). Deriving it (rather than hardcoding) keeps

@@ -43,6 +43,14 @@ fn sample_config() -> RuntimeConfig {
         cc: 43,
         value: CcValue::Trigger(127),
     };
+    // Exercise the per-page continuous bindings (encoder + expr) — all three
+    // `ContinuousBinding` variants (None / Sysex / Sysex; MidiCc is covered by
+    // the baked default pages) — through the round-trip.
+    cfg.pages[0].encoder = config::ContinuousBinding::Sysex(config::ContinuousSysex::Volume);
+    cfg.pages[0].expr = [
+        config::ContinuousBinding::None,
+        config::ContinuousBinding::Sysex(config::ContinuousSysex::Wah),
+    ];
     // Exercise the radio-group field (Tier 3) through the round-trip too.
     cfg.pages[0].buttons[1].group = config::MAX_GROUPS as u8;
     // Exercise the HID action variant (Tier 5): a Ctrl+Shift keystroke and a
