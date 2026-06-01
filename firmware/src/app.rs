@@ -26,6 +26,7 @@ use crate::events::{
     ButtonEvent, Cell, CellState, DisplayCmd, EncoderEvent, ExprEvent, LedColor, LedFrame, MidiCmd,
     MidiRx,
 };
+use crate::editor::{EditOutcome, Editor};
 use crate::hal::{buttons, encoder, expression, hid, leds};
 use crate::menu::{Menu, MenuOutcome};
 use crate::midi::{katana, mux, sysex};
@@ -118,6 +119,9 @@ enum Mode {
     /// Note/Pitch-Bend update it. Any footswitch release — or an encoder
     /// hold — leaves back to performance.
     Tuner,
+    /// On-device config editor: a footswitch picks the switch to edit; the
+    /// encoder navigates/changes its fields; an encoder hold saves + exits.
+    Edit,
 }
 
 /// Direction a cycle button's press moves through its states.
@@ -144,6 +148,8 @@ pub struct Router {
     config_scratch: &'static mut [u8],
     mode: Mode,
     menu: Menu,
+    /// On-device config editor cursor (active in [`Mode::Edit`]).
+    editor: Editor,
     /// Tuner readout (driven by inbound MIDI while in [`Mode::Tuner`]).
     tuner: TunerState,
     /// Accumulated encoder-driven value (`0..=127`), emitted per the active
@@ -212,6 +218,7 @@ impl Router {
             config_scratch,
             mode: Mode::Performance,
             menu: Menu::new(),
+            editor: Editor::new(),
             tuner: TunerState::new(),
             enc_value: 0,
             meter_values: [0; 3],
@@ -385,6 +392,13 @@ impl Router {
             Mode::Tuner => {
                 if !ev.pressed {
                     self.exit_tuner();
+                }
+            }
+            // In the editor a footswitch press picks the switch being edited.
+            Mode::Edit => {
+                if ev.pressed {
+                    let outcome = self.editor.footswitch(ev.index as usize);
+                    self.apply_edit_outcome(outcome).await;
                 }
             }
         }
@@ -716,6 +730,11 @@ impl Router {
                 }
                 // The tuner is read-only; rotation does nothing.
                 Mode::Tuner => {}
+                Mode::Edit => {
+                    let page = self.page;
+                    let outcome = self.editor.turn(delta, &mut self.config, page);
+                    self.apply_edit_outcome(outcome).await;
+                }
             },
             EncoderEvent::Press => self.enc_press_at = Some(Instant::now()),
             EncoderEvent::Release => {
@@ -729,6 +748,9 @@ impl Router {
                 } else if matches!(self.mode, Mode::Menu) {
                     let outcome = self.menu.press();
                     self.apply_menu_outcome(outcome).await;
+                } else if matches!(self.mode, Mode::Edit) {
+                    let outcome = self.editor.press();
+                    self.apply_edit_outcome(outcome).await;
                 }
             }
         }
@@ -799,6 +821,7 @@ impl Router {
             Mode::Performance => self.enter_menu(),
             Mode::Menu => self.leave_menu().await,
             Mode::Tuner => self.exit_tuner(),
+            Mode::Edit => self.leave_edit().await,
         }
     }
 
@@ -807,6 +830,14 @@ impl Router {
         self.mode = Mode::Menu;
         self.menu.enter();
         let cmd = self.menu.display_cmd(&self.settings);
+        let _ = self.display.try_send(cmd);
+    }
+
+    /// Enter the on-device config editor for the current page.
+    fn enter_edit(&mut self) {
+        self.mode = Mode::Edit;
+        self.editor.enter();
+        let cmd = self.editor.display_cmd(&self.config, self.page);
         let _ = self.display.try_send(cmd);
     }
 
@@ -848,6 +879,23 @@ impl Router {
         self.refresh_page();
     }
 
+    /// Leave the editor: persist the edited config to flash (only if a change
+    /// was made — saves flash wear), then restore the performance page. The
+    /// edits are already live in `self.config`, so the repaint reflects them.
+    async fn leave_edit(&mut self) {
+        if self.editor.dirty()
+            && self
+                .storage
+                .store_config(&self.config, self.config_scratch)
+                .await
+                .is_err()
+        {
+            warn!("router: edit config save failed");
+        }
+        self.mode = Mode::Performance;
+        self.refresh_page();
+    }
+
     async fn apply_menu_outcome(&mut self, outcome: MenuOutcome) {
         match outcome {
             MenuOutcome::Redraw => {
@@ -862,6 +910,23 @@ impl Router {
                 let cmd = self.menu.display_cmd(&self.settings);
                 let _ = self.display.try_send(cmd);
             }
+            MenuOutcome::EnterEdit => {
+                // Persist any settings the user changed first, then open the
+                // editor on the current page.
+                self.save().await;
+                self.enter_edit();
+            }
+        }
+    }
+
+    /// Service an editor interaction: repaint the editor view, or save + leave.
+    async fn apply_edit_outcome(&mut self, outcome: EditOutcome) {
+        match outcome {
+            EditOutcome::Redraw => {
+                let cmd = self.editor.display_cmd(&self.config, self.page);
+                let _ = self.display.try_send(cmd);
+            }
+            EditOutcome::Save => self.leave_edit().await,
         }
     }
 

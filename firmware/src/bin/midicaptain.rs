@@ -627,7 +627,9 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
         let want = match cmd {
             DisplayCmd::Tuner { .. } => Screen::Tuner,
             DisplayCmd::Page { .. } | DisplayCmd::Flash { .. } => Screen::Grid,
-            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } => Screen::Text,
+            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } | DisplayCmd::Edit { .. } => {
+                Screen::Text
+            }
             // Meters overlay the grid — screen-neutral; never switch for them.
             DisplayCmd::Meters { .. } => screen,
         };
@@ -702,6 +704,12 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                     grid.set_meters(exp1, exp2, encoder);
                     let _ = grid.render(&mut display);
                 }
+            }
+            DisplayCmd::Edit { title: t, status: s } => {
+                title.set_text(&t);
+                let _ = title.render(&mut display);
+                status.set_text(&s);
+                let _ = status.render(&mut display);
             }
         }
     }
