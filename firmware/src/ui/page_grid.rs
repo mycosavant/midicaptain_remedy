@@ -50,17 +50,22 @@ use super::palette::{Color, Palette};
 use crate::config::{Label, NAME_CAP, PAGE_BUTTONS};
 use crate::events::{Cell, CellState, LedColor};
 
-// ── Geometry ────────────────────────────────────────────────────────────
-const HEADER_H: u32 = 26;
-const MARGIN: i32 = 2;
+// ── Geometry (240×240) ───────────────────────────────────────────────────
+const HEADER_H: u32 = 22;
+const MARGIN: i32 = 3;
 const CELL_GAP: i32 = 2;
 const CELL_W: u32 = 57;
-const ROW_H: u32 = 84;
-const ROW0_Y: i32 = 28;
+const ROW_H: u32 = 88;
+const ROW0_Y: i32 = 24;
 const ROW1_Y: i32 = 114; // ROW0_Y + ROW_H + CELL_GAP
-const FOOT_Y: i32 = 200; // ROW1_Y + ROW_H + CELL_GAP
-const FOOT_H: u32 = 38;
-const FOOT_W: u32 = 117;
+const FOOT_Y: i32 = 204; // ROW1_Y + ROW_H + CELL_GAP
+// The footer is a deliberately short, quiet "utility strip" — page nav now, and
+// the menu's BACK / SAVE buttons later. Kept low-profile so it never dominates.
+const FOOT_H: u32 = 30;
+const FOOT_W: u32 = 116; // (240 − 2·MARGIN − CELL_GAP) / 2
+/// First scan-index that lives in the footer (UP/DOWN). Cells `>=` this get the
+/// muted utility-strip style instead of the active/idle cell style.
+const FOOT_INDEX: usize = 8;
 
 /// Width-per-character of [`FONT_8X13_BOLD`] (the cell-label font), used to
 /// budget how many characters fit before truncation.
@@ -92,13 +97,34 @@ const CELLS: [(i32, i32, u32, u32); PAGE_BUTTONS] = [
 /// Small corner tag per scan-index — the physical switch name.
 const TAGS: [&str; PAGE_BUTTONS] = ["1", "2", "3", "4", "A", "B", "C", "D", "UP", "DN"];
 
-/// LED colours are stored at a current-safe ~⅕ level (`config::color::L =
-/// 0x30`); the display can show full brightness. Scale each channel up so the
-/// cells read as vivid hues. Saturating, so a user config that already uses
-/// bright values stays put.
+// ── Dark theme (default) ─────────────────────────────────────────────────
+// The UI defaults to dark mode: a black field with hue-tinted cells that sit
+// near-black when idle and lift to a brighter edge + subtle fill when active.
+// These few constants are the whole palette, so a future light theme (or a
+// per-config theme once presets carry one) is a localized swap.
+/// Screen background.
+const BG: Color = Palette::BLACK;
+/// Accent gain. Config LED colours sit at a current-safe ~⅕ level
+/// (`config::color::L = 0x30`); ×3 lifts them to a medium on-screen hue — bright
+/// enough to read, without the blown-out primary-colour ("is this inverted?")
+/// look a larger gain gave. Lower this to darken the active accents further.
+const ACCENT_GAIN: u16 = 3;
+/// Idle / utility-strip cell background — a near-black neutral, lifted just off
+/// the field so a cell's outline is still visible but the screen stays dark and
+/// high-contrast (a darker tile reads as more legible against the bright label —
+/// bench-confirmed). A lighter `rgb(22, 22, 22)` reads nice but a touch washed
+/// out; keep it noted as the "dim" theme variant for the future theme config.
+const CELL_IDLE_BG: Color = Color::rgb(10, 10, 10);
+/// Idle / utility-strip label — a bright near-white grey. The grid exists to
+/// show every button's label, so idle labels stay legible; active labels go full
+/// white (the dim↔brighten contrast). Independent of the accent so a dark hue
+/// (e.g. a blue button) can't render its idle text invisibly.
+const LABEL_IDLE: Color = Color::rgb(192, 192, 192);
+
+/// A button's on-screen accent hue, derived from its (dim) LED colour.
+/// Saturating, so a config already using bright values stays put.
 fn led_to_display(c: LedColor) -> Color {
-    const GAIN: u16 = 5;
-    let up = |v: u8| (v as u16 * GAIN).min(255) as u8;
+    let up = |v: u8| (v as u16 * ACCENT_GAIN).min(255) as u8;
     Color::rgb(up(c.r), up(c.g), up(c.b))
 }
 
@@ -211,7 +237,7 @@ impl PageGrid {
         Rectangle::new(Point::new(0, 0), Size::new(240, HEADER_H))
             .into_styled(
                 PrimitiveStyleBuilder::new()
-                    .fill_color(Palette::AZURE.dark(3).to_rgb565())
+                    .fill_color(Palette::AZURE.dark(5).to_rgb565())
                     .build(),
             )
             .draw(target)?;
@@ -243,16 +269,17 @@ impl PageGrid {
         let (x, y, w, h) = CELLS[i];
         let cell = &self.cells[i];
         let rect = Rectangle::new(Point::new(x, y), Size::new(w, h));
-        let dc = led_to_display(cell.color);
+        let accent = led_to_display(cell.color);
         let flashing = self.flashing[i];
+        let footer = i >= FOOT_INDEX;
 
         // Unbound, not flashing: blank slot with a faint frame so the grid
         // structure stays visible.
         if matches!(cell.state, CellState::Empty) && !flashing {
             rect.into_styled(
                 PrimitiveStyleBuilder::new()
-                    .fill_color(Palette::BLACK.to_rgb565())
-                    .stroke_color(Color::rgb(20, 20, 20).to_rgb565())
+                    .fill_color(BG.to_rgb565())
+                    .stroke_color(Color::rgb(18, 18, 18).to_rgb565())
                     .stroke_width(1)
                     .build(),
             )
@@ -260,36 +287,46 @@ impl PageGrid {
             return Ok(());
         }
 
-        // Pick background / border / text colours by lit state.
-        let (bg, border, fg) = if flashing {
-            (dc, Palette::WHITE, Palette::BLACK) // pressed: inverted, high-contrast
+        // Dark-theme colours by state. Idle cells sit on a dark-neutral tile
+        // (lifted off the black field so the cell shape + a readable grey label
+        // are always visible) with a dim hue-tinted edge; an active cell lifts to
+        // a tinted fill + bright edge + white label (the dim↔brighten contrast).
+        // The footer is a quiet utility strip — same dark tile, accent label; a
+        // press briefly inverts the cell for a high-contrast pop.
+        let (bg, border, fg, stroke) = if flashing {
+            (accent, Palette::WHITE, Palette::BLACK, 2u32)
+        } else if footer {
+            (CELL_IDLE_BG, accent.dim(2), accent, 1)
         } else if is_lit(cell.state) {
-            (dc.dark(3), dc, Palette::WHITE)
+            (accent.dark(6), accent, Palette::WHITE, 2)
         } else {
-            (Palette::BLACK, dc.dark(3), Palette::GREY)
+            (CELL_IDLE_BG, accent.dim(2), LABEL_IDLE, 1)
         };
 
         rect.into_styled(
             PrimitiveStyleBuilder::new()
                 .fill_color(bg.to_rgb565())
                 .stroke_color(border.to_rgb565())
-                .stroke_width(2)
+                .stroke_width(stroke)
                 .build(),
         )
         .draw(target)?;
 
-        // Corner tag (switch name).
-        let tag_style = MonoTextStyle::new(&FONT_6X10, fg.to_rgb565());
-        Text::with_text_style(
-            TAGS[i],
-            Point::new(x + 5, y + 8),
-            tag_style,
-            TextStyleBuilder::new()
-                .alignment(Alignment::Left)
-                .baseline(Baseline::Middle)
-                .build(),
-        )
-        .draw(target)?;
+        // Corner tag (switch name) — main cells only. The short footer reads
+        // cleanly from its label alone, so its tag is omitted.
+        if !footer {
+            let tag_style = MonoTextStyle::new(&FONT_6X10, border.to_rgb565());
+            Text::with_text_style(
+                TAGS[i],
+                Point::new(x + 5, y + 9),
+                tag_style,
+                TextStyleBuilder::new()
+                    .alignment(Alignment::Left)
+                    .baseline(Baseline::Middle)
+                    .build(),
+            )
+            .draw(target)?;
+        }
 
         // Label, truncated to the cell width.
         let tall = h >= 60;
