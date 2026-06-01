@@ -77,6 +77,14 @@ pub enum CcValue {
     /// NOTE: serde keys enum variants by position — only ever *append* variants
     /// here (a reorder would silently re-interpret every stored/pushed config).
     Momentary,
+    /// Self-toggling device: send this fixed value (`0..=127`, conventionally
+    /// `127`) on **every** press — never a `0`. For devices that track their own
+    /// on/off state and flip it on each message they receive (e.g. a MIDI-learned
+    /// toggle in NeuralDSP / many amp-sim plugins), where [`Self::Toggle`]'s
+    /// alternating `127`/`0` desyncs (the device ignores our `0`, so it only
+    /// changes every other tap). The router still flips a *local* on/off so the
+    /// LED + grid cell read as a toggle. Append-only — see [`Self::Momentary`].
+    Trigger(u8),
 }
 
 /// A named BOSS Katana SysEx command. The config stays free of raw Roland
@@ -177,13 +185,16 @@ pub enum Action {
 }
 
 impl Action {
-    /// The CC a [`CcValue::Toggle`] action drives, if any. The router keys
-    /// toggle state (and LED on/off feedback) by this.
+    /// The CC whose on/off state this action latches for LED + grid-cell
+    /// feedback, if any. Both [`CcValue::Toggle`] and [`CcValue::Trigger`]
+    /// present as a toggle on-device (the router tracks a local on/off either
+    /// way); they differ only in what goes on the wire (`127`/`0` alternation vs.
+    /// a fixed value every press).
     pub fn toggle_cc(self) -> Option<u8> {
         match self {
             Action::MidiCc {
                 cc,
-                value: CcValue::Toggle,
+                value: CcValue::Toggle | CcValue::Trigger(_),
             } => Some(cc),
             _ => None,
         }
@@ -327,9 +338,11 @@ const PAGE_DEFAULT: Page = Page {
         radio("PRE3", color::WHITE, Action::ProgramChange { program: 2 }, 1),
         radio("PRE4", color::WHITE, Action::ProgramChange { program: 3 }, 1),
         // A..D → CC toggles (FX on/off), with LED on/off feedback. D also
-        // long-presses into the tuner.
+        // long-presses into the tuner. FX2 demos the `Trigger` CC mode (sends
+        // 127 every press for a self-toggling plugin), next to FX1's plain
+        // Toggle for an easy A/B — both read as on/off on-device.
         button("FX1", color::GREEN, toggle(80)),
-        button("FX2", color::BLUE, toggle(81)),
+        button("FX2", color::BLUE, trigger(81)),
         // C → a 3-state cycle (CC 82 = 0/64/127), demoing "keytimes". Long-press
         // resets it to the first state (CycleLong::Reset). References cycle 0.
         cycle_button("LVL", color::AMBER, 0),
@@ -466,6 +479,16 @@ const fn toggle(cc: u8) -> Action {
     Action::MidiCc {
         cc,
         value: CcValue::Toggle,
+    }
+}
+
+/// Helper: a CC "trigger" action on `cc` — sends `127` on every press for a
+/// device that toggles its own state (see [`CcValue::Trigger`]). Presents as a
+/// toggle on-device (local on/off for the LED + cell).
+const fn trigger(cc: u8) -> Action {
+    Action::MidiCc {
+        cc,
+        value: CcValue::Trigger(127),
     }
 }
 

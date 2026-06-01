@@ -549,6 +549,15 @@ impl Router {
                         .try_send(MidiCmd::ControlChange { channel, cc, value: if on { 127 } else { 0 } });
                     false // latched: the cell shows on/off
                 }
+                // Self-toggling device: send `v` (e.g. 127) on EVERY press — the
+                // device flips its own state — and track only a local on/off so
+                // the cell + LED still read as a toggle. Never sends `0`, which is
+                // what desynced `Toggle` on NeuralDSP-style plugins.
+                CcValue::Trigger(v) => {
+                    self.toggles[cc as usize] = !self.toggles[cc as usize];
+                    let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
+                    false // latched: the cell shows on/off
+                }
                 // Momentary is edge-driven in `on_button_perf` (press=127,
                 // release=0). Reaching dispatch means it was mapped without a
                 // release edge (e.g. a long-press) — do nothing rather than

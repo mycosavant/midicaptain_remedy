@@ -39,7 +39,7 @@ except ImportError:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-PROTO_VERSION = 5  # v5: Action::Hid (keyboard/consumer); v4: cycles pool + Action::Cycle; v3 group; v2 midi_thru
+PROTO_VERSION = 6  # v6: CcValue::Trigger(u8); v5: Action::Hid; v4: cycles pool + Action::Cycle; v3 group; v2 midi_thru
 CMD_HELLO, CMD_GET_CONFIG, CMD_SET_CONFIG, CMD_REBOOT, CMD_ERROR = (
     0x01, 0x02, 0x03, 0x04, 0xFF,
 )
@@ -182,6 +182,8 @@ def _dec_action(r: _Reader) -> dict:
             value = "toggle"
         elif vdisc == 2:    # Momentary
             value = "momentary"
+        elif vdisc == 3:    # Trigger(u8) — fixed value every press (self-toggling device)
+            value = {"trigger": r.u8()}
         else:
             raise ValueError(f"unknown CcValue discriminant {vdisc}")
         return {"type": "cc", "cc": cc, "value": value}
@@ -224,6 +226,8 @@ def _enc_action(a: dict) -> bytes:
             return out + _varint_enc(1)
         if v == "momentary":
             return out + _varint_enc(2)
+        if isinstance(v, dict) and "trigger" in v:  # Trigger(u8)
+            return out + _varint_enc(3) + bytes([int(v["trigger"])])
         return out + _varint_enc(0) + bytes([int(v)])  # Fixed(u8)
     if t == "pc":
         return _varint_enc(2) + bytes([a["program"]])
