@@ -29,7 +29,7 @@
 use core::fmt::Write as _;
 
 use crate::config::{self, Action, CcValue, OwnedButton, RuntimeConfig, PAGE_BUTTONS};
-use crate::events::{DisplayCmd, EditLine, LedColor};
+use crate::events::{DisplayCmd, LedColor, ListLine, LIST_MAX_ROWS};
 
 /// Editable action "kinds" the Type field cycles through (index = position).
 const KIND_COUNT: usize = 8;
@@ -184,61 +184,74 @@ impl Editor {
         }
     }
 
-    /// The display command for the current cursor + selected switch.
+    /// The display command for the current cursor + selected switch: the
+    /// switch identity in the title and one row per editable field, with the
+    /// cursor on [`Self::field`] (the [`crate::ui::ListView`] highlights it).
     pub fn display_cmd(&self, cfg: &RuntimeConfig, page: usize) -> DisplayCmd {
-        let mut title = EditLine::new();
-        let mut status = EditLine::new();
+        let mut title = ListLine::new();
+        let mut rows: heapless::Vec<ListLine, LIST_MAX_ROWS> = heapless::Vec::new();
         match self.sw {
             None => {
                 let _ = title.push_str("EDIT PAGE");
-                let _ = status.push_str("Tap a switch");
+                let mut row = ListLine::new();
+                let _ = row.push_str("Tap a switch to edit");
+                let _ = rows.push(row);
             }
             Some(sw) => {
                 let _ = write!(title, "EDIT {}", TAGS.get(sw).copied().unwrap_or("?"));
                 let btn = &cfg.page(page).buttons[sw.min(PAGE_BUTTONS - 1)];
-                self.write_field(&mut status, &btn.on_press, btn.color);
+                for field in 0..FIELD_COUNT {
+                    let _ = rows.push(field_row(field, &btn.on_press, btn.color));
+                }
             }
         }
-        DisplayCmd::Edit { title, status }
+        DisplayCmd::List {
+            title,
+            rows,
+            selected: self.field as u8,
+            editing: self.editing,
+        }
     }
+}
 
-    /// Format the selected field's "name: value" into `status`.
-    fn write_field(&self, status: &mut EditLine, action: &Action, color: LedColor) {
-        let m = if self.editing { '*' } else { '>' };
-        let kind = kind_index(action);
-        match self.field {
-            FIELD_TYPE => {
-                let name = kind.map(|k| KIND_NAMES[k]).unwrap_or("(other)");
-                let _ = write!(status, "{}Type: {}", m, name);
-            }
-            FIELD_PARAM => match kind {
-                Some(1..=4) => {
-                    let _ = write!(status, "{}CC#: {}", m, param_of(action));
-                }
-                Some(5) => {
-                    let _ = write!(status, "{}Prog: {}", m, param_of(action));
-                }
-                Some(7) => {
-                    let _ = write!(status, "{}Cycle#: {}", m, param_of(action));
-                }
-                _ => {
-                    let _ = write!(status, "{}Param: -", m);
-                }
-            },
-            FIELD_VALUE => match kind {
-                Some(3) | Some(4) => {
-                    let _ = write!(status, "{}Value: {}", m, value_of(action));
-                }
-                _ => {
-                    let _ = write!(status, "{}Value: -", m);
-                }
-            },
-            FIELD_COLOR => {
-                let _ = write!(status, "{}Color: {}", m, PALETTE[color_index(color)].0);
-            }
-            _ => {}
+/// Format field `field`'s "name: value" row (no cursor marker — the list view
+/// highlights the selected row).
+fn field_row(field: usize, action: &Action, color: LedColor) -> ListLine {
+    let mut row = ListLine::new();
+    let kind = kind_index(action);
+    match field {
+        FIELD_TYPE => {
+            let name = kind.map(|k| KIND_NAMES[k]).unwrap_or("(other)");
+            let _ = write!(row, "Type: {}", name);
         }
+        FIELD_PARAM => match kind {
+            Some(1..=4) => {
+                let _ = write!(row, "CC#: {}", param_of(action));
+            }
+            Some(5) => {
+                let _ = write!(row, "Prog: {}", param_of(action));
+            }
+            Some(7) => {
+                let _ = write!(row, "Cycle#: {}", param_of(action));
+            }
+            _ => {
+                let _ = row.push_str("Param: -");
+            }
+        },
+        FIELD_VALUE => match kind {
+            Some(3) | Some(4) => {
+                let _ = write!(row, "Value: {}", value_of(action));
+            }
+            _ => {
+                let _ = row.push_str("Value: -");
+            }
+        },
+        FIELD_COLOR => {
+            let _ = write!(row, "Color: {}", PALETTE[color_index(color)].0);
+        }
+        _ => {}
     }
+    row
 }
 
 impl Default for Editor {

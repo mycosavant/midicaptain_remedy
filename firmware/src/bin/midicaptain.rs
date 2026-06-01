@@ -55,7 +55,7 @@ use static_cell::StaticCell;
 use midicaptain_firmware::app::{self, Router};
 use midicaptain_firmware::config;
 use midicaptain_firmware::display::{self, DisplayPeripherals, RemedyDisplay};
-use midicaptain_firmware::events::{CalStep, DisplayCmd, MenuKind};
+use midicaptain_firmware::events::{CalStep, DisplayCmd};
 use midicaptain_firmware::hal::encoder::{self, Encoder};
 use midicaptain_firmware::hal::expression::{self, ExpressionInputs};
 use midicaptain_firmware::hal::leds::{self, LedDriver};
@@ -65,7 +65,7 @@ use midicaptain_firmware::midi::mux;
 use midicaptain_firmware::pins;
 use midicaptain_firmware::proto;
 use midicaptain_firmware::storage::{self, Storage};
-use midicaptain_firmware::ui::{PageGrid, Palette, TextPanel, TunerView, Widget};
+use midicaptain_firmware::ui::{ListView, PageGrid, Palette, TextPanel, TunerView, Widget};
 use {defmt_rtt as _, panic_probe as _};
 
 type UsbDriver = Driver<'static, USB>;
@@ -547,11 +547,13 @@ async fn write_cdc_frame(cdc: &mut CdcAcmClass<'static, UsbDriver>, frame: &[u8]
 /// Which on-screen layout the display task last painted. Each layout occupies
 /// different regions, so a switch between them wipes the screen first —
 /// otherwise the old layout's pixels would linger around the new one.
-/// `Grid` is the performance page grid; `Text` is the settings menu /
-/// calibration wizard / boot splash; `Tuner` is the chromatic tuner.
+/// `Grid` is the performance page grid; `List` is the scrolling settings menu /
+/// config editor; `Text` is the calibration wizard / boot splash; `Tuner` is
+/// the chromatic tuner.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Grid,
+    List,
     Text,
     Tuner,
 }
@@ -569,9 +571,11 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
 
     // Performance screen.
     let mut grid = PageGrid::new();
+    // List screen (settings menu / config editor).
+    let mut list = ListView::new();
     // Tuner screen.
     let mut tuner = TunerView::new(&FONT_10X20);
-    // Text screen (menu / calibration / boot splash).
+    // Text screen (calibration wizard / boot splash).
     let mut title: TextPanel<16> = TextPanel::new(
         Point::new(8, 8),
         Size::new(224, 56),
@@ -627,9 +631,8 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
         let want = match cmd {
             DisplayCmd::Tuner { .. } => Screen::Tuner,
             DisplayCmd::Page { .. } | DisplayCmd::Flash { .. } => Screen::Grid,
-            DisplayCmd::Menu { .. } | DisplayCmd::Cal { .. } | DisplayCmd::Edit { .. } => {
-                Screen::Text
-            }
+            DisplayCmd::List { .. } => Screen::List,
+            DisplayCmd::Cal { .. } => Screen::Text,
             // Meters overlay the grid — screen-neutral; never switch for them.
             DisplayCmd::Meters { .. } => screen,
         };
@@ -637,6 +640,7 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
             let _ = display.clear(Palette::BLACK.to_rgb565());
             match want {
                 Screen::Grid => grid.mark_dirty(),
+                Screen::List => list.mark_dirty(),
                 Screen::Tuner => tuner.mark_dirty(),
                 Screen::Text => {
                     title.mark_dirty();
@@ -667,18 +671,9 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                 flash_idx = Some(i);
                 flash_deadline = Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(FLASH_MS));
             }
-            DisplayCmd::Menu { title: item, value, kind, editing } => {
-                title.set_text("SETTINGS");
-                let _ = title.render(&mut display);
-                let marker = if editing { "*" } else { ">" };
-                let mut line: String<32> = String::new();
-                let _ = match kind {
-                    MenuKind::Int => write!(line, "{} {}: {}", marker, item, value),
-                    MenuKind::Percent => write!(line, "{} {}: {}%", marker, item, value),
-                    MenuKind::Action => write!(line, "> {} (press)", item),
-                };
-                status.set_text(&line);
-                let _ = status.render(&mut display);
+            DisplayCmd::List { title: t, rows, selected, editing } => {
+                list.set(&t, &rows, selected as usize, editing);
+                let _ = list.render(&mut display);
             }
             DisplayCmd::Cal { pedal, step, raw } => {
                 title.set_text("CALIBRATE");
@@ -704,12 +699,6 @@ async fn display_task(mut display: RemedyDisplay, _backlight: Output<'static>, c
                     grid.set_meters(exp1, exp2, encoder);
                     let _ = grid.render(&mut display);
                 }
-            }
-            DisplayCmd::Edit { title: t, status: s } => {
-                title.set_text(&t);
-                let _ = title.render(&mut display);
-                status.set_text(&s);
-                let _ = status.render(&mut display);
             }
         }
     }
