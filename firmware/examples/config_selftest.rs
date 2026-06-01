@@ -38,6 +38,11 @@ fn sample_config() -> RuntimeConfig {
         cc: 42,
         value: CcValue::Fixed(99),
     };
+    // Exercise the Trigger CC mode (self-toggling devices) through the round-trip.
+    cfg.pages[0].buttons[3].on_press = Action::MidiCc {
+        cc: 43,
+        value: CcValue::Trigger(127),
+    };
     // Exercise the radio-group field (Tier 3) through the round-trip too.
     cfg.pages[0].buttons[1].group = config::MAX_GROUPS as u8;
     // Exercise the HID action variant (Tier 5): a Ctrl+Shift keystroke and a
