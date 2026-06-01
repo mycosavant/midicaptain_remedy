@@ -7,8 +7,8 @@
 //! menu itself performs no I/O — it's a pure state machine plus reads of the
 //! sampler's published raw ADC value.
 //!
-//! Items: MIDI channel, LED brightness, calibrate pedal 1, calibrate pedal
-//! 2, exit. (Display-brightness — needing a PWM backlight — is a follow-up.)
+//! Items: MIDI channel, LED brightness, display brightness, calibrate pedal 1,
+//! calibrate pedal 2, edit page, exit.
 
 use core::fmt::Write as _;
 
@@ -18,15 +18,17 @@ use crate::storage::{PedalCal, Settings};
 
 const ITEM_MIDI: usize = 0;
 const ITEM_LED: usize = 1;
-const ITEM_CAL1: usize = 2;
-const ITEM_CAL2: usize = 3;
-const ITEM_EDIT: usize = 4;
-const ITEM_EXIT: usize = 5;
-const ITEM_COUNT: usize = 6;
+const ITEM_DISPLAY: usize = 2;
+const ITEM_CAL1: usize = 3;
+const ITEM_CAL2: usize = 4;
+const ITEM_EDIT: usize = 5;
+const ITEM_EXIT: usize = 6;
+const ITEM_COUNT: usize = 7;
 
 const LABELS: [&str; ITEM_COUNT] = [
     "MIDI Channel",
     "LED Bright",
+    "Disp Bright",
     "Cal Pedal 1",
     "Cal Pedal 2",
     "Edit Page",
@@ -82,6 +84,9 @@ impl Menu {
             match self.selected {
                 ITEM_MIDI => s.midi_channel = (s.midi_channel as i32 + d).clamp(1, 16) as u8,
                 ITEM_LED => s.led_brightness = (s.led_brightness as i32 + d * 5).clamp(0, 100) as u8,
+                ITEM_DISPLAY => {
+                    s.display_brightness = (s.display_brightness as i32 + d * 5).clamp(0, 100) as u8
+                }
                 _ => {}
             }
         } else {
@@ -96,7 +101,7 @@ impl Menu {
             return MenuOutcome::Redraw; // footswitch captures; encoder press is a no-op
         }
         match self.selected {
-            ITEM_MIDI | ITEM_LED => {
+            ITEM_MIDI | ITEM_LED | ITEM_DISPLAY => {
                 self.editing = !self.editing;
                 MenuOutcome::Redraw
             }
@@ -159,6 +164,9 @@ impl Menu {
                 }
                 ITEM_LED => {
                     let _ = write!(row, "{}: {}%", label, s.led_brightness);
+                }
+                ITEM_DISPLAY => {
+                    let _ = write!(row, "{}: {}%", label, s.display_brightness);
                 }
                 _ => {
                     let _ = row.push_str(label);

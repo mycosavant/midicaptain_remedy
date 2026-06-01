@@ -68,6 +68,7 @@ async fn main(_spawner: Spawner) {
         cs:        p.PIN_13,
         dc:        p.PIN_12,
         backlight: p.PIN_8,
+        pwm_slice: p.PWM_SLICE4,
     }) {
         Ok(d) => d,
         Err(e) => {
