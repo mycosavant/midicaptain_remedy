@@ -183,6 +183,45 @@ fn self_test() {
     defmt::assert!(enc == [0x03, 0x74], "encode_11bit(500) mismatch");
     defmt::assert!(katana::decode_11bit(enc[0], enc[1]) == 500, "decode_11bit mismatch");
 
+    // 1b. Inbound `parse_dt1` is the exact inverse of the builders, and
+    //     rejects malformed / foreign frames rather than mis-parsing them.
+    let amp = katana::set_amp_type(2).unwrap();
+    let p = katana::parse_dt1(amp.as_slice(), &katana::KATANA_MODEL_ID)
+        .expect("set_amp_type should round-trip through parse_dt1");
+    defmt::assert!(
+        p.address == katana::ADDR_AMP_TYPE && p.data.len() == 1 && p.data[0] == 2,
+        "parse_dt1(amp_type) wrong addr/data"
+    );
+    let preset = katana::recall_preset(3).unwrap();
+    let p = katana::parse_dt1(preset.as_slice(), &katana::KATANA_MODEL_ID)
+        .expect("recall_preset should round-trip through parse_dt1");
+    defmt::assert!(
+        p.address == katana::ADDR_RECALL_PRESET
+            && p.data.len() == 2
+            && p.data[0] == 0x00
+            && p.data[1] == 3,
+        "parse_dt1(recall_preset) wrong addr/data"
+    );
+    // Corrupt checksum → rejected.
+    let mut bad = GAIN_50;
+    bad[13] ^= 0x7F; // flip the checksum byte (stays 7-bit, definitely differs)
+    defmt::assert!(
+        katana::parse_dt1(&bad, &katana::KATANA_MODEL_ID).is_none(),
+        "parse_dt1 accepted a bad checksum"
+    );
+    // Foreign model id → rejected (checksum still valid, model byte perturbed).
+    let mut other = GAIN_50;
+    other[6] ^= 0x01;
+    defmt::assert!(
+        katana::parse_dt1(&other, &katana::KATANA_MODEL_ID).is_none(),
+        "parse_dt1 accepted a foreign model id"
+    );
+    // Truncated frame → rejected.
+    defmt::assert!(
+        katana::parse_dt1(&GAIN_50[..10], &katana::KATANA_MODEL_ID).is_none(),
+        "parse_dt1 accepted a truncated frame"
+    );
+
     // 2. SysEx USB packetise → reassemble round-trips byte-for-byte.
     let delay = katana::set_delay_time(500).unwrap();
     let mut packets: heapless::Vec<[u8; 4], 96> = heapless::Vec::new();

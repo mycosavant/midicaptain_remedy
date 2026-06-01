@@ -59,6 +59,8 @@ pub type MidiRxReceiver = embassy_sync::channel::Receiver<'static, CriticalSecti
 pub type MidiCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, MidiCmd, CMD_DEPTH>;
 /// Sender the router pushes outbound SysEx to (drained by [`out_loop`]).
 pub type SysExSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, SysEx, SYSEX_DEPTH>;
+/// Receiver the router drains inbound, reassembled SysEx from (device sync).
+pub type SysExReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, SysEx, SYSEX_DEPTH>;
 
 // ── MIDI-thru routing ────────────────────────────────────────────────────
 // The thru matrix forwards inbound channel-voice messages to a *specific*
