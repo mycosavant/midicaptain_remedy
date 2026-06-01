@@ -293,8 +293,10 @@ python scripts/cdc_config_client.py COM9 tweak       # rename page 1 + recolor a
 What to look for:
 
 - **`hello`** prints the **protocol version** — must match `proto::PROTO_VERSION`
-  (currently **5**). A mismatch means the firmware on the board predates the
-  feature you're testing — reflash. (v5 = HID actions; v4 = cycles; v3 = groups.)
+  (currently **8**). A mismatch means the firmware on the board predates the
+  feature you're testing — reflash. (v8 = tap tempo; v7 = per-page encoder/expr
+  bindings; v6 = CC trigger; v5 = HID actions; v4 = cycles; v3 = groups;
+  v2 = MIDI-thru.)
 - **`get`** decodes the live config. After a factory reset it shows the 3 baked
   pages with real labels, the radio groups (`PRE1–4 group=1`, amps `group=1`,
   `CH1–4 group=2`), the `LVL` cycle (`cycle 0: 3 step(s) long=reset`), and the
@@ -327,6 +329,24 @@ It resolves the device **by name** (`MIDICaptain Remedy (Rust)`), so a shifting
 port id doesn't matter. If it doesn't appear, the device USB-C isn't enumerated
 (see [connections](#2-prerequisites--connections)). Default MIDI channel is 1
 (channel reverts to 1 after a factory reset).
+
+To read the **Roland/Katana SysEx** in that stream — the boot device-state
+sweep and the amp's replies — pipe it through `scripts/sysex_decode.py`:
+
+```powershell
+./scripts/midimon.ps1 -Format min-hex | python scripts/sysex_decode.py
+```
+
+On a Katana, booting should show the device-sync query and the amp answering:
+
+```text
+DT1 set   EditorMode = ENTER  [01]
+RQ1 read  AmpType  len=1
+DT1 set   AmpType = 3 (Lead)  [03]      # amp's reply → lights the LEAD radio
+```
+
+`python scripts/sysex_decode.py --selftest` checks the decoder against
+known-good vectors (`9/9 ALL PASS`) — handy offline, with no hardware.
 
 ---
 
