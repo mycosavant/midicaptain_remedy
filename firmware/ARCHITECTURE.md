@@ -73,29 +73,44 @@ firmware/
 ```
 
 The ST7789 path is **hardware-validated** (geometry `Deg0`+offset(0,0),
-colour inversion ON, SWD flashing via Pi Debug Probe). All Wave-1 modules
-above (`events`, `hal/*`, `midi/*`, `storage`) have **landed and pass the
-green gate**, each with a proof example — but they are **not yet wired into
-the router**: `bin/midicaptain.rs` still runs only the
-buttons→router→display skeleton. Connecting them is Wave 2 (see below). The
-application binary remains the live integration point — every subsystem
-joins it as another task feeding the router.
+colour inversion ON, SWD flashing via Pi Debug Probe). Waves 1–3 have
+**landed and merged** (`main` @ `90fd7d5`, green gate clean): the Wave-1
+modules (`events`, `hal/*`, `midi/*`, `storage`), the Wave-2 integration
+(router in `src/app.rs`, footswitch scanner in `src/hal/buttons.rs`, the
+config/page action system in `src/config/`), and the Wave-3 features
+(settings menu, on-device editor, chromatic tuner, USB-HID, USB-CDC
+config-sync via `src/proto.rs`). The application binary remains the live
+integration point — every new subsystem joins it as another task feeding
+the router.
 
-Still to land:
+Modules that have since landed beyond the original PoC layout:
 
 ```
 src/
-├── hal/buttons.rs          ← lift the inline footswitch debouncer out of bin/ (→ ButtonEvent)
-├── config/                 ← per-button/per-page action table (CC/PC/SysEx/page-nav); serde-toml from flash KV
-├── sync/                   ← COBS+CRC16 wire protocol for webapp sync (USB CDC)
-└── app.rs                  ← extract the router/state machine out of bin/ once it grows
+├── app.rs                  ← router/state machine (Mode: Performance/Menu/Tuner/Edit) ✅
+├── hal/buttons.rs          ← footswitch debouncer (→ ButtonEvent) ✅
+├── hal/hid.rs              ← USB-HID keyboard + consumer-control reports ✅
+├── config/mod.rs           ← per-button/per-page action table + RuntimeConfig (postcard in flash KV) ✅
+├── proto.rs                ← COBS+CRC16 wire protocol for config sync over USB-CDC ✅ (PROTO_VERSION = 8)
+├── editor.rs               ← Mode::Edit on-device config editor ✅
+├── menu.rs                 ← settings menu + live pedal calibration ✅
+├── tuner.rs + ui/tuner.rs  ← chromatic tuner mode (MIDI-fed) ✅
+├── pitch.rs                ← fixed-point YIN detector (standalone; audio source pending HW mod)
+└── ui/list_view.rs         ← scrolling list widget (menu + editor) ✅
 ```
 
-Today the buttons/router/display tasks live inline in
-`bin/midicaptain.rs`. As Wave-2 integration grows the router, lift the
-inline footswitch task into `src/hal/buttons.rs` and the router into
-`src/app.rs`; the bin becomes thin wiring. (Storage deliberately shipped as
-a direct async accessor, not a task — see the task-graph note below.)
+Still to land (see [`HANDOFF.md`](HANDOFF.md) for the full dependency map):
+
+```
+src/app.rs        ← consume SYSEX_IN (currently produced but unrouted) → device sync
+src/midi/katana.rs← DT1 *response* parser (builders exist; parser does not) → device sync
+adc_task          ← DMA-sample GP26 audio in Mode::Tuner, run pitch.rs (gated on HW front-end)
+src/display.rs    ← PWM backlight (currently GPIO-high) for the deferred brightness menu item
+```
+
+The router lives in `src/app.rs` and selects across the input channels;
+`bin/midicaptain.rs` is now thin wiring. (Storage deliberately shipped as a
+direct async accessor, not a task — see the task-graph note below.)
 
 ## Task graph (target)
 
