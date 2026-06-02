@@ -172,6 +172,28 @@ pub struct Router {
     /// change + config apply (like [`Self::toggles`]). Local-only — not driven
     /// by inbound MIDI.
     group_sel: [Option<u8>; config::MAX_GROUPS],
+    /// Device-confirmed effect-switch state, keyed by CC number: the on/off the
+    /// connected Katana last reported for a block (an inbound block DT1 bridged
+    /// to its `cc_alias` — see [`Self::on_sysex_rx`]). Unlike the per-page
+    /// [`Self::toggles`] (local press intent, cleared on page change), this
+    /// persists across page changes and is re-applied to `toggles` on page entry
+    /// ([`Self::reapply_device_state`]) so a device-backed toggle keeps showing
+    /// the amp's real state. `None` = the amp hasn't reported that CC. A bare CC
+    /// echo (`sync_cc`) is *not* cached here — only amp-confirmed block state is.
+    dev_toggles: [Option<bool>; 128],
+    /// Last amp type / preset the device reported (the radio-group params swept
+    /// on boot + broadcast in editor mode). Cached like [`Self::dev_toggles`] so
+    /// the amp-type / channel radios survive a page change — re-applied via
+    /// [`Self::reflect_sysex`] on page entry. `None` = not yet reported.
+    dev_amp_type: Option<u8>,
+    dev_preset: Option<u8>,
+    /// `true` when the loaded config drives a Katana over SysEx
+    /// ([`config::RuntimeConfig::uses_katana_sysex`]). Gates the optimistic
+    /// toggle cache: only then is a local effect-CC press recorded into
+    /// [`Self::dev_toggles`], so a generic-CC rig that happens to use a Katana
+    /// `cc_alias` (16/17/19/20/21) keeps the per-page clear semantics. Recomputed
+    /// on a config swap.
+    device_backed: bool,
     /// Per-page cycle position, indexed by button scan-index: the state a
     /// [`Action::Cycle`] button last landed on, or `None` (not yet pressed).
     /// Cleared on page change + config apply, like [`Self::toggles`]. Local —
@@ -215,6 +237,7 @@ impl Router {
         hid: hid::HidSender,
         config_resp: ConfigRespSender,
     ) -> Self {
+        let device_backed = config.uses_katana_sysex();
         Self {
             config,
             page: 0,
@@ -230,6 +253,10 @@ impl Router {
             current_program: 0,
             toggles: [false; 128],
             group_sel: [None; config::MAX_GROUPS],
+            dev_toggles: [None; 128],
+            dev_amp_type: None,
+            dev_preset: None,
+            device_backed,
             cycle_active: [None; config::PAGE_BUTTONS],
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
@@ -377,7 +404,30 @@ impl Router {
         self.toggles = [false; 128];
         self.group_sel = [None; config::MAX_GROUPS];
         self.cycle_active = [None; config::PAGE_BUTTONS];
+        self.reapply_device_state();
         self.refresh_page();
+    }
+
+    /// Re-apply the cached device-confirmed state after the per-page toggle /
+    /// group clear (in [`Self::change_page`] / a config apply), so device-backed
+    /// buttons — Katana effect switches, amp type, preset — keep showing the
+    /// amp's real state on the new page instead of resetting to off. The cache is
+    /// fed by inbound device feedback (the boot RQ1 sweep + live editor-mode
+    /// broadcasts) in [`Self::on_sysex_rx`]. Purely-local CC toggles aren't
+    /// cached, so they still clear on a page change (their cross-page meaning is
+    /// undefined — the reason the clear exists).
+    fn reapply_device_state(&mut self) {
+        for cc in 0..self.dev_toggles.len() {
+            if let Some(on) = self.dev_toggles[cc] {
+                self.toggles[cc] = on;
+            }
+        }
+        if let Some(t) = self.dev_amp_type {
+            self.reflect_sysex(SysexCmd::AmpType(t));
+        }
+        if let Some(p) = self.dev_preset {
+            self.reflect_sysex(SysexCmd::RecallPreset(p));
+        }
     }
 
     // ── input handlers (mode-routed) ───────────────────────────────────
@@ -568,6 +618,7 @@ impl Router {
                 CcValue::Toggle => {
                     let on = !self.toggles[cc as usize];
                     self.toggles[cc as usize] = on;
+                    self.cache_device_toggle(cc, on);
                     let _ = self
                         .midi_cmd
                         .try_send(MidiCmd::ControlChange { channel, cc, value: if on { 127 } else { 0 } });
@@ -578,7 +629,9 @@ impl Router {
                 // the cell + LED still read as a toggle. Never sends `0`, which is
                 // what desynced `Toggle` on NeuralDSP-style plugins.
                 CcValue::Trigger(v) => {
-                    self.toggles[cc as usize] = !self.toggles[cc as usize];
+                    let on = !self.toggles[cc as usize];
+                    self.toggles[cc as usize] = on;
+                    self.cache_device_toggle(cc, on);
                     let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
                     false // latched: the cell shows on/off
                 }
@@ -796,18 +849,64 @@ impl Router {
     }
 
     /// Dispatch an inbound, reassembled SysEx message from the device. In
-    /// performance mode a recognised Katana DT1 (amp type / preset) updates the
-    /// matching radio-group selection, so the board reflects the amp's real
-    /// state — the SysEx analogue of [`Self::sync_cc`]. Other modes and
-    /// unrecognised messages are ignored (no echo, no allocation).
+    /// performance mode a recognised Katana DT1 reflects the amp's real state two
+    /// ways: a radio param (amp type / preset) selects the matching radio button,
+    /// and an effect-switch block (BOOST/MOD/…) bridges to its `cc_alias` toggle.
+    /// Both are also cached so they survive a page change (see
+    /// [`Self::reapply_device_state`]). Other modes and unrecognised messages are
+    /// ignored (no echo, no allocation).
     fn on_sysex_rx(&mut self, msg: sysex::SysEx) {
         if !matches!(self.mode, Mode::Performance) {
             return;
         }
-        if let Some(cmd) =
-            katana::parse_dt1(&msg, &katana::KATANA_MODEL_ID).and_then(|d| sysex_cmd_from_dt1(&d))
-        {
+        let Some(dt1) = katana::parse_dt1(&msg, &katana::KATANA_MODEL_ID) else {
+            return;
+        };
+        // Radio param (amp type / preset): cache for page-entry re-apply, then
+        // reflect onto the active page's radios.
+        if let Some(cmd) = sysex_cmd_from_dt1(&dt1) {
+            match cmd {
+                SysexCmd::AmpType(t) => self.dev_amp_type = Some(t),
+                SysexCmd::RecallPreset(p) => self.dev_preset = Some(p),
+                _ => {}
+            }
             self.reflect_sysex(cmd);
+        // Effect-switch block: bridge the block DT1 to its `cc_alias` and reflect
+        // the amp's on/off on the matching CC toggle.
+        } else if let Some(cc) = katana::effect_block_cc(&dt1.address) {
+            if let Some(&v) = dt1.data.first() {
+                self.reflect_block(cc, v != 0);
+            }
+        }
+    }
+
+    /// Bridge a Katana effect-switch block to its CC toggle: record the amp-
+    /// confirmed on/off in both the live [`Self::toggles`] (so the current page's
+    /// LED + grid cell update) and the persistent [`Self::dev_toggles`] cache (so
+    /// it survives a page change — re-applied by [`Self::reapply_device_state`]),
+    /// repainting only if the live state changed. The device-confirmed SysEx
+    /// analogue of [`Self::sync_cc`]; unlike a bare CC echo it is cached across
+    /// pages, since the amp has positively reported this block's state.
+    fn reflect_block(&mut self, cc: u8, on: bool) {
+        self.dev_toggles[cc as usize] = Some(on);
+        if self.toggles[cc as usize] != on {
+            self.toggles[cc as usize] = on;
+            self.refresh();
+        }
+    }
+
+    /// Optimistically record a *local* toggle press as device state, so it
+    /// survives a page change. Only when the config drives a Katana
+    /// ([`Self::device_backed`]) and `cc` is a mirrored effect-switch alias —
+    /// because the amp accepts the GA-FC CC but never echoes it back over DIN, so
+    /// the press is the only evidence the pedal has of the new block state. A
+    /// no-op for generic CC toggles, which keep the per-page clear (their
+    /// cross-page meaning is undefined). The amp stays the source of truth: a
+    /// later inbound block DT1 (boot sweep / any broadcast) overwrites this via
+    /// [`Self::reflect_block`].
+    fn cache_device_toggle(&mut self, cc: u8, on: bool) {
+        if self.device_backed && katana::is_effect_cc(cc) {
+            self.dev_toggles[cc as usize] = Some(on);
         }
     }
 
@@ -1053,12 +1152,18 @@ impl Router {
                     return ConfigResp::Err(proto::ProtoError::StoreFailed);
                 }
                 self.config = cfg;
+                self.device_backed = self.config.uses_katana_sysex();
                 self.sync_thru();
                 self.mode = Mode::Performance;
                 self.page = 0;
                 self.toggles = [false; 128];
                 self.group_sel = [None; config::MAX_GROUPS];
                 self.cycle_active = [None; config::PAGE_BUTTONS];
+                // Keep the device-confirmed cache and re-apply it: the amp's real
+                // state still holds across a config swap, so device-backed buttons
+                // the new config defines reflect it immediately (parity with a
+                // page change).
+                self.reapply_device_state();
                 self.refresh_page();
                 defmt::info!("router: config applied ({} page(s))", self.config.page_count());
                 ConfigResp::Ok
@@ -1116,8 +1221,9 @@ fn sysex_cmd_from_dt1(dt1: &katana::Dt1) -> Option<SysexCmd> {
 /// the loaded config drives a Katana (`enabled`), this waits for USB/MIDI to
 /// settle, puts the amp into editor/BTS mode — so it both answers the RQ1 reads
 /// and broadcasts later front-panel changes — then sweeps an RQ1 read of the
-/// mirrored parameters ([`katana::DEVICE_QUERY_SWEEP`]). The amp's DT1 replies
-/// arrive on the inbound SysEx channel and are reflected onto the LEDs by
+/// mirrored radio params ([`katana::DEVICE_QUERY_SWEEP`]) and the effect-switch
+/// blocks ([`katana::EFFECT_BLOCKS`]). The amp's DT1 replies arrive on the
+/// inbound SysEx channel and are reflected onto the LEDs by
 /// [`Router::on_sysex_rx`]. Editor mode is left engaged on purpose — exiting it
 /// would stop the passive sync. A no-op (returns immediately) when not enabled.
 ///
@@ -1134,15 +1240,24 @@ pub async fn device_query_task(sysex_out: mux::SysExSender, enabled: bool) {
         let _ = sysex_out.try_send(sx);
     }
     Timer::after(Duration::from_millis(100)).await; // CP `settle_time_ms`
+    // Radio params (amp type + preset) ...
     for (addr, len) in katana::DEVICE_QUERY_SWEEP {
         if let Ok(sx) = katana::rq1(&katana::KATANA_MODEL_ID, &addr, len) {
             let _ = sysex_out.try_send(sx);
         }
         Timer::after(Duration::from_millis(20)).await; // CP inter-query delay
     }
+    // ... then the effect-switch blocks (one byte each). Their DT1 replies bridge
+    // to the GA-FC CC toggles via `Router::on_sysex_rx` → `reflect_block`.
+    for (addr, _cc) in katana::EFFECT_BLOCKS {
+        if let Ok(sx) = katana::rq1(&katana::KATANA_MODEL_ID, &addr, 1) {
+            let _ = sysex_out.try_send(sx);
+        }
+        Timer::after(Duration::from_millis(20)).await;
+    }
     defmt::info!(
         "device query: editor mode + {} RQ1 read(s) sent",
-        katana::DEVICE_QUERY_SWEEP.len()
+        katana::DEVICE_QUERY_SWEEP.len() + katana::EFFECT_BLOCKS.len()
     );
 }
 

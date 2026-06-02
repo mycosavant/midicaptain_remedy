@@ -93,6 +93,47 @@ async fn main(_spawner: Spawner) {
     }
     info!("config self-test: RAM round-trip OK");
 
+    // ── 1b. uses_katana_sysex detects SysEx via *any* binding ──────────────
+    {
+        // Default has SysEx buttons (the Katana page) → detected.
+        defmt::assert!(default.uses_katana_sysex(), "default should use katana sysex");
+
+        // Strip every SysEx *button* but keep the SysEx encoder/expr bindings:
+        // detection must still fire via the continuous-binding path (the fix —
+        // a config whose only Katana use is a SysEx volume knob).
+        let mut cont_only = default.clone();
+        for page in cont_only.pages.iter_mut() {
+            for b in page.buttons.iter_mut() {
+                if matches!(b.on_press, Action::Sysex(_)) {
+                    b.on_press = Action::None;
+                }
+                if matches!(b.on_long_press, Action::Sysex(_)) {
+                    b.on_long_press = Action::None;
+                }
+            }
+        }
+        defmt::assert!(
+            cont_only.uses_katana_sysex(),
+            "continuous SysEx binding must trigger katana detection"
+        );
+
+        // Now also drop the continuous SysEx bindings → no SysEx anywhere (the
+        // baked cycles are CC-only) → not a Katana setup.
+        let mut none = cont_only.clone();
+        for page in none.pages.iter_mut() {
+            page.encoder = config::ContinuousBinding::MidiCc(7);
+            page.expr = [
+                config::ContinuousBinding::MidiCc(1),
+                config::ContinuousBinding::MidiCc(7),
+            ];
+        }
+        defmt::assert!(
+            !none.uses_katana_sysex(),
+            "pure-CC config must not trigger katana detection"
+        );
+        info!("config self-test: uses_katana_sysex OK");
+    }
+
     // ── 2. Flash round-trip ────────────────────────────────────────────
     let mut storage = Storage::new(p.FLASH);
     defmt::unwrap!(storage.store_config(&sample, scratch).await);

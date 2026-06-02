@@ -923,17 +923,32 @@ impl RuntimeConfig {
         self.cycles.get(index as usize)
     }
 
-    /// `true` if any button on any page sends a Katana SysEx command. Used to
-    /// gate the boot-time device-state query — there's no point talking Roland
-    /// SysEx to a generic-CC rig. A config-free proxy for "this is a Katana
-    /// setup" (a future `query_device` config flag could make it explicit, but
-    /// that would change the wire format).
+    /// `true` if the loaded config drives a Katana over SysEx by *any* path: a
+    /// button [`Action::Sysex`] (short or long press), a continuous
+    /// [`ContinuousBinding::Sysex`] on the encoder or an expression pedal, or a
+    /// [`StepAction::Sysex`] cycle step. Gates the boot-time device-state query +
+    /// editor mode (`app::device_query_task`): there's no point talking Roland
+    /// SysEx to a generic-CC rig, but if anything speaks SysEx the amp must be put
+    /// into editor mode so it answers the RQ1 sweep and broadcasts front-panel
+    /// changes. A config-free proxy for "this is a Katana setup" (a future
+    /// `query_device` config flag could make it explicit, but that would change
+    /// the wire format).
+    ///
+    /// NB: earlier this looked only at button actions, so a config whose only
+    /// Katana use was a SysEx encoder/pedal (e.g. a volume knob) never entered
+    /// editor mode.
     pub fn uses_katana_sysex(&self) -> bool {
-        self.pages.iter().any(|p| {
+        let page_uses = |p: &OwnedPage| {
             p.buttons.iter().any(|b| {
                 matches!(b.on_press, Action::Sysex(_)) || matches!(b.on_long_press, Action::Sysex(_))
-            })
-        })
+            }) || matches!(p.encoder, ContinuousBinding::Sysex(_))
+                || p.expr.iter().any(|e| matches!(e, ContinuousBinding::Sysex(_)))
+        };
+        let cycle_uses = self
+            .cycles
+            .iter()
+            .any(|c| c.steps.iter().any(|s| matches!(s, StepAction::Sysex(_))));
+        self.pages.iter().any(page_uses) || cycle_uses
     }
 }
 
