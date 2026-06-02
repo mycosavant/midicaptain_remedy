@@ -6,12 +6,16 @@ what's left, and the parallel/serial split — not a linear to-do list. Read
 [`ARCHITECTURE.md`](ARCHITECTURE.md) (task graph + channel rules) alongside
 it, and [`TESTING.md`](TESTING.md) before validating anything.
 
-> **Currency:** rewritten 2026-06-01 against `main` @ `90fd7d5` (PR #45).
-> Green gate verified clean on that commit: `cargo build --release --bins
-> --examples` and `cargo clippy --release --lib --bins --examples -D
-> warnings` both pass. The previous edition of this file described a
-> "Wave 2 next" world that the repo has long since overtaken — if anything
-> below disagrees with the code, the code wins; fix this file.
+> **Currency:** reconciled 2026-06-02 against `main` @ `8b53287`. Since the
+> previous edition (@`90fd7d5`/#45) these merged: **#46** (plan refresh),
+> **#47** (device-sync receive half — `parse_dt1` + `SYSEX_IN` routed),
+> **#48** (active half — RQ1 boot sweep), **#49** (PWM backlight + "Disp
+> Bright"), **#50** (`sysex_decode.py`), **#51** (bench findings),
+> **#52** (device-sync state persistence — see Finding 1 below). Green gate
+> (`cargo build --release --bins --examples` + `cargo clippy --release --lib
+> --bins --examples -- -D warnings`) verified on `8b53287`. The "What's
+> pending" section below has been trimmed to what actually remains — **if
+> anything disagrees with the code, the code wins; fix this file.**
 
 ## TL;DR
 
@@ -19,11 +23,12 @@ The port is **functionally complete for the single-device live use case**.
 Waves 1–3 landed and merged: the full input→router→output pipeline, the
 config/page action system (8 action tiers incl. HID + tap-tempo + cycles +
 radio groups), the settings menu, the on-device config editor, the
-chromatic tuner (MIDI-fed), flash persistence, and a USB-CDC config-sync
-link. What remains is a short tail of **integration glue** (one channel
-not yet routed), two **hardware-gated** features (audio-DSP tuner, PWM
-backlight), and a **cross-branch webapp** effort whose firmware side is
-already done. Details below.
+chromatic tuner (MIDI-fed), flash persistence, a USB-CDC config-sync link,
+the PWM backlight, and **Katana device sync** (boot-state read + page-stable
+effect toggles — as far as DIN physically allows). What remains is a short
+tail: the **encoder-volume** bench triage (Finding 2), a **cross-branch
+webapp** currency pass whose firmware side is done, and the **hardware-gated**
+audio-DSP tuner. Details below.
 
 ## Branch / PR policy — **CHANGED, read this**
 
@@ -79,36 +84,28 @@ edits the router/app state (**serialise it**). Keep new work in **new
 files**; use `isolation: "worktree"` for any agent that must touch shared
 files concurrently.
 
-### ▸ Foundation glue (serial — do first; unblocks device sync)
+### ▸ Device sync — ✅ as far as DIN allows (#47/#48/#52)
 
-**Route `SYSEX_IN` into the router.** The SysEx-in channel is produced but
-**never consumed** — incoming Roland/Katana SysEx is silently dropped.
-- Today the router selects `select(select4(buttons, encoder, expr,
-  midi_rx), config_req)` — see `src/app.rs:1054-1074`. `SYSEX_IN` is
-  created and fed by `usb_in_loop`/`din_in_loop` (`src/bin/midicaptain.rs:90,333,338`)
-  but is not one of those arms.
-- Add it as a third top-level `select` arm (e.g.
-  `select3(select4(...), config_req.receive(), sysex_in.receive())`) and a
-  `Router::on_sysex_rx` handler. This is small but it edits the router, so
-  it's **serial** — land it before, or as the first commit of, device sync.
+`SYSEX_IN` is routed (`Router::on_sysex_rx`), `katana::parse_dt1` +
+`effect_block_cc` decode inbound DT1, the boot RQ1 sweep reads amp type /
+preset / the five effect blocks, and effect-toggle state now **survives a page
+change** via a device-confirmed cache + an optimistic local-press cache
+(`dev_toggles`, `cache_device_toggle`, `reapply_device_state`).
 
-### ▸ Device sync (independent parser + serial integration)
-
-Query the Katana for current effect state on boot/connect and reflect it on
-the toggle LEDs. Two halves:
-1. **Katana DT1 *response* parser** — `src/midi/katana.rs` has all the
-   *builders* (`dt1`, `rq1`, `enter_editor_mode`, per-block setters) but
-   **no parser** for *incoming* `F0 41 <dev> <model> 12 <addr[4]>
-   <data..> <cksum> F7` messages. Add `parse_dt1(&[u8]) -> Option<(addr,
-   data)>` with checksum verification. **Independent, new code, unit/self-
-   testable** — follow the `midi_engine_test` pattern. *Parallelisable.*
-2. **RQ1 boot sweep + LED reflection** — on boot (gated by a
-   `query_device` config flag), emit `rq1(...)` for the tracked blocks;
-   route the DT1 responses (via the SYSEX_IN wiring above) into the
-   router's toggle/LED state. **Serial** (edits the router).
-
-Model both as a self-contained subsystem like menu/tuner did: parser +
-data in `katana.rs`, integration in `app.rs`.
+**Hard ceiling found on the bench (2026-06-02):** over **DIN** the Katana
+*answers RQ1 reads* (request/response) but does **not** broadcast front-panel
+changes, and never echoes a received GA-FC CC. So **live "twist a knob on the
+amp → pedal follows" is infeasible over DIN** — the amp only pushes block state
+over its USB-host / BOSS-Tone-Studio port, and our pedal is a USB-*device*.
+What remains is therefore not "more reflection plumbing" but a topology/poll
+question:
+- **(optional) RQ1-poll on page entry** — actively *read* the amp's true block
+  state when a page is entered, to catch front-panel changes lazily. Only worth
+  it **if the amp answers the effect-block RQ1 reads over DIN** (confirmed for
+  amp type / preset; block reads unverified — check RTT/`sysex_decode.py` for
+  block DT1 replies after the boot sweep first). Edits the router → serial.
+- **USB-host bridge** — the only way to get the amp's live BTS broadcasts is to
+  sit a USB host between pedal and amp. Hardware/topology, not firmware.
 
 ### ▸ Tuner Phase 3 — on-device audio DSP (**hardware-gated**)
 
@@ -128,13 +125,10 @@ finding). The chosen path is **standalone on-device pitch detection**:
   silicon with the front-end fitted. Keep the MIDI-receive path too (free
   remote-display fallback from host software).
 
-### ▸ Display brightness — PWM backlight (small, shared file)
+### ▸ Display brightness — PWM backlight — ✅ done (#49)
 
-`src/display.rs:114-116` drives the backlight plain GPIO-high; the comment
-flags the intended `PWMOut` wrapper. The settings menu already *defers* a
-"Display Brightness" item waiting on this. Wrap the backlight pin in a PWM
-slice, expose a brightness setter, wire the menu item + persist to flash.
-Touches shared `display.rs` — keep it its own PR.
+The backlight is a PWM slice with a brightness setter, wired to the "Disp
+Bright" settings-menu item and persisted to flash.
 
 ### ▸ Webapp live-config sync (**cross-branch — already in flight as PR #31**)
 
@@ -156,17 +150,21 @@ webapp-only) adds a Web Serial live-config editor under `webapp/`.
 
 ## Recommended sequence
 
-1. **`SYSEX_IN` → router** (serial foundation).
-2. **Device sync** — DT1 parser (parallel) then RQ1 sweep + LED reflection
-   (serial). This is the clear next *firmware* subsystem.
-3. **PWM backlight** + the deferred menu item (independent PR).
-4. **Webapp #31 currency pass** — re-sync the JS codec to proto v8 /
-   current `RuntimeConfig`, then bench-test.
-5. **Tuner Phase 3** — only once the analog front-end hardware mod exists.
+The device-sync, PWM-backlight, and `SYSEX_IN` items above are **done**. What's
+left, roughly in priority order:
 
-Items 2–4 are largely independent and can run as parallel sessions /
-subagents *as long as* each keeps to its own files and integration into the
-router stays serial (one PR at a time touching `app.rs`).
+1. **Finding 2 — encoder volume** (bench triage; see below). Smallest, and it's
+   blocking a working Katana continuous control.
+2. **Webapp #31 currency pass** — re-sync the JS codec to `PROTO_VERSION = 8` /
+   current `RuntimeConfig` (`midi_thru`, `cycles`, appended fields), then
+   bench-test Chromium → CDC. Cross-branch; firmware side is done.
+3. **(optional) Device-sync RQ1-poll on page entry** — only if you want lazy
+   front-panel reflection *and* the amp answers block RQ1 over DIN (verify
+   first). Otherwise device sync is considered complete for the DIN use case.
+4. **Tuner Phase 3** — only once the analog front-end hardware mod exists.
+
+Items 1–2 are independent (different files / branches) and can run in parallel;
+any router edit (e.g. #3) stays serial — one PR at a time touching `app.rs`.
 
 ## Hardware findings — 2026-06-01 device-sync bench (next session, start here)
 
@@ -198,13 +196,17 @@ compounding causes:
    DT1 → a CC toggle. The CP firmware bridged these with `cc_alias` in
    `remedy/config/profiles/katana.toml`; the Rust config has no equivalent.
 
-Recommended fix (continuation of #47/#48, the bulk of remaining device-sync):
-**(a)** re-sync on page entry — in `change_page`, re-issue the query for the
-params the new page uses (or keep a device-state cache and re-apply); **(b)**
-extend `DEVICE_QUERY_SWEEP` with the four block addresses and add a
-DT1-address → state bridge (e.g. a `SysexCmd::Block{…}` or address-keyed map so
-`reflect_sysex` can set `toggles[cc]` for the matching button). Also revisit
-whether device-backed toggles should survive a page change at all.
+**✅ RESOLVED — #52 (`8b53287`), bench-confirmed.** Implemented: `effect_block_cc`
+(the `cc_alias` bridge), the extended block sweep, and a re-applied
+device-confirmed cache (`reapply_device_state`). The bench then showed the
+sweep/bridge alone weren't enough — over **DIN** the amp neither broadcasts
+front-panel changes nor echoes a received CC (see the device-sync section
+above), so `dev_toggles` only held the boot value and the press still reset on a
+page change. Final fix = an **optimistic local-press cache** (`cache_device_toggle`,
+gated by `device_backed = uses_katana_sysex` + `katana::is_effect_cc`): the
+pedal records the state *it* commanded, which `reapply_device_state` restores
+after a page change. Press BOOST → change page → back → stays ON, one press off.
+Live front-panel → pedal reflection remains out of scope on DIN (see above).
 
 ### Finding 2 — encoder doesn't drive volume on Katana / Katana Live
 
