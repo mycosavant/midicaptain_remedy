@@ -187,6 +187,13 @@ pub struct Router {
     /// [`Self::reflect_sysex`] on page entry. `None` = not yet reported.
     dev_amp_type: Option<u8>,
     dev_preset: Option<u8>,
+    /// `true` when the loaded config drives a Katana over SysEx
+    /// ([`config::RuntimeConfig::uses_katana_sysex`]). Gates the optimistic
+    /// toggle cache: only then is a local effect-CC press recorded into
+    /// [`Self::dev_toggles`], so a generic-CC rig that happens to use a Katana
+    /// `cc_alias` (16/17/19/20/21) keeps the per-page clear semantics. Recomputed
+    /// on a config swap.
+    device_backed: bool,
     /// Per-page cycle position, indexed by button scan-index: the state a
     /// [`Action::Cycle`] button last landed on, or `None` (not yet pressed).
     /// Cleared on page change + config apply, like [`Self::toggles`]. Local —
@@ -230,6 +237,7 @@ impl Router {
         hid: hid::HidSender,
         config_resp: ConfigRespSender,
     ) -> Self {
+        let device_backed = config.uses_katana_sysex();
         Self {
             config,
             page: 0,
@@ -248,6 +256,7 @@ impl Router {
             dev_toggles: [None; 128],
             dev_amp_type: None,
             dev_preset: None,
+            device_backed,
             cycle_active: [None; config::PAGE_BUTTONS],
             press_at: [None; buttons::COUNT],
             momentary_active: [None; buttons::COUNT],
@@ -609,6 +618,7 @@ impl Router {
                 CcValue::Toggle => {
                     let on = !self.toggles[cc as usize];
                     self.toggles[cc as usize] = on;
+                    self.cache_device_toggle(cc, on);
                     let _ = self
                         .midi_cmd
                         .try_send(MidiCmd::ControlChange { channel, cc, value: if on { 127 } else { 0 } });
@@ -619,7 +629,9 @@ impl Router {
                 // the cell + LED still read as a toggle. Never sends `0`, which is
                 // what desynced `Toggle` on NeuralDSP-style plugins.
                 CcValue::Trigger(v) => {
-                    self.toggles[cc as usize] = !self.toggles[cc as usize];
+                    let on = !self.toggles[cc as usize];
+                    self.toggles[cc as usize] = on;
+                    self.cache_device_toggle(cc, on);
                     let _ = self.midi_cmd.try_send(MidiCmd::ControlChange { channel, cc, value: v });
                     false // latched: the cell shows on/off
                 }
@@ -883,6 +895,21 @@ impl Router {
         }
     }
 
+    /// Optimistically record a *local* toggle press as device state, so it
+    /// survives a page change. Only when the config drives a Katana
+    /// ([`Self::device_backed`]) and `cc` is a mirrored effect-switch alias —
+    /// because the amp accepts the GA-FC CC but never echoes it back over DIN, so
+    /// the press is the only evidence the pedal has of the new block state. A
+    /// no-op for generic CC toggles, which keep the per-page clear (their
+    /// cross-page meaning is undefined). The amp stays the source of truth: a
+    /// later inbound block DT1 (boot sweep / any broadcast) overwrites this via
+    /// [`Self::reflect_block`].
+    fn cache_device_toggle(&mut self, cc: u8, on: bool) {
+        if self.device_backed && katana::is_effect_cc(cc) {
+            self.dev_toggles[cc as usize] = Some(on);
+        }
+    }
+
     /// Reflect a device-reported [`SysexCmd`] onto the active page: select the
     /// grouped button whose press emits that same command (radio sync), then
     /// repaint. No-op if the page has no such grouped button, or it is already
@@ -1125,6 +1152,7 @@ impl Router {
                     return ConfigResp::Err(proto::ProtoError::StoreFailed);
                 }
                 self.config = cfg;
+                self.device_backed = self.config.uses_katana_sysex();
                 self.sync_thru();
                 self.mode = Mode::Performance;
                 self.page = 0;

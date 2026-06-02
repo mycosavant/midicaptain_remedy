@@ -246,6 +246,17 @@ fn self_test() {
         katana::effect_block_cc(&katana::ADDR_AMP_TYPE).is_none(),
         "amp-type address misidentified as an effect block"
     );
+    // `is_effect_cc` is the forward of the same table (used by the optimistic
+    // toggle cache): the four GA-FC aliases are device-backed, an unrelated CC
+    // (7 = volume) is not.
+    defmt::assert!(
+        katana::is_effect_cc(16)
+            && katana::is_effect_cc(17)
+            && katana::is_effect_cc(19)
+            && katana::is_effect_cc(20)
+            && !katana::is_effect_cc(7),
+        "is_effect_cc disagrees with the EFFECT_BLOCKS aliases"
+    );
     // An "off" block carries data 0 — the bridge reads the data byte, not presence.
     let off = katana::set_boost(false).unwrap();
     let d = katana::parse_dt1(off.as_slice(), &katana::KATANA_MODEL_ID).unwrap();

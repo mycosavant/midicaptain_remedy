@@ -104,6 +104,16 @@ pub fn effect_block_cc(address: &[u8; 4]) -> Option<u8> {
         .map(|&(_, cc)| cc)
 }
 
+/// `true` if `cc` is the `cc_alias` of a mirrored effect-switch block (the
+/// forward of [`effect_block_cc`] over just the CC). `app::Router` uses it to
+/// decide whether a *local* toggle press is device-backed and so should be
+/// cached as amp state: the Katana accepts the GA-FC CC but does **not** echo it
+/// back over DIN, so without an optimistic cache the pressed state would be lost
+/// on the next page change.
+pub fn is_effect_cc(cc: u8) -> bool {
+    EFFECT_BLOCKS.iter().any(|&(_, alias)| alias == cc)
+}
+
 /// Roland 7-bit checksum over `data`:
 /// `accum = sum(data) & 0x7F; (128 - accum) & 0x7F`.
 ///
