@@ -1,0 +1,11 @@
+{
+  "name": "midicaptain-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MIDI Captain preset builder + live config sync (Web Serial). Zero runtime deps; no build step. package.json exists only so Node runs the .js ES modules in test/ for the codec self-test.",
+  "scripts": {
+    "test": "node test/codec.test.mjs",
+    "serve": "node test/serve.mjs"
+  }
+}

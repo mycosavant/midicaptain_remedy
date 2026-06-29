@@ -83,3 +83,13 @@ CC / PC / SysEx mappings cited inline in the reference panel:
 - [FL Studio MIDI settings](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/envsettings_midi.htm)
 - [REAPER MIDI mapping how-to](https://harmonicbuzz.com/mapping-a-midi-controller-to-reapers-transport-controls/)
 - [Paint Audio (manufacturer)](https://www.pantheraudio.com/)
+
+## Live device sync (Rust/Embassy firmware) — `live.html`
+
+The "Real-time device sync" limitation above applies to the **OEM** firmware.
+The Rust/Embassy firmware adds a USB-CDC config-sync link, so a new editor —
+[`live.html`](live.html) — talks to the device over **Web Serial**: connect,
+read the running config, edit it, and push it back (the device persists to flash
+and hot-reloads, no reboot). It's a separate model from the OEM preset files, so
+it's a separate editor (tabs: Live Device | OEM Files). See
+[`LIVE_SYNC.md`](LIVE_SYNC.md) for architecture, wire protocol, and how to run.
